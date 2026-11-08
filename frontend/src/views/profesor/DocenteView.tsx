@@ -8,12 +8,12 @@ interface DocenteViewProps {
 
 export const DocenteView: React.FC<DocenteViewProps> = ({ ramo }) => {
   return (
-    <main className="flex-1 p-8 bg-slate-50 overflow-y-auto">
+    <main className="flex-1 p-8 bg-[#F4F6F9] overflow-y-auto">
       <div className="max-w-3xl mx-auto space-y-6">
-        {/* Cabecera del Ramo del Profesor */}
+        {/* Cabecera del Ramo del Profesor (Estilo AULA USM) */}
         <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
           <div className="flex items-center gap-2 mb-1">
-            <span className="text-xs font-bold px-2 py-0.5 rounded bg-usm-navy text-usm-gold">
+            <span className="text-xs font-bold px-2 py-0.5 rounded bg-usm-blue text-white">
               {ramo.codigo}
             </span>
             <h1 className="text-xl font-bold text-slate-800">{ramo.nombre}</h1>
@@ -25,7 +25,7 @@ export const DocenteView: React.FC<DocenteViewProps> = ({ ramo }) => {
         {/* Recursos y Documentos del Ramo */}
         <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
           <h2 className="text-sm font-bold text-slate-800 uppercase tracking-wide flex items-center gap-2">
-            <FileText className="w-4 h-4 text-usm-navy" />
+            <FileText className="w-4 h-4 text-usm-blue" />
             Recursos y Material de Estudio
           </h2>
           <ul className="divide-y divide-slate-100">
@@ -41,7 +41,7 @@ export const DocenteView: React.FC<DocenteViewProps> = ({ ramo }) => {
         {/* Configuración del Comportamiento de la IA */}
         <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-3">
           <h2 className="text-sm font-bold text-slate-800 uppercase tracking-wide flex items-center gap-2">
-            <Settings className="w-4 h-4 text-usm-navy" />
+            <Settings className="w-4 h-4 text-usm-blue" />
             Configuración del Tutor IA (Base)
           </h2>
           <p className="text-xs text-slate-500">
