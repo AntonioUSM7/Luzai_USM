@@ -21,3 +21,17 @@ export interface MensajeChat {
   texto: string;
   hora: string;
 }
+
+export interface ArchivoRecurso {
+  nombre: string;
+  carpeta: string;
+  tamano_bytes: number;
+  tamano_legible: string;
+  fecha_modificacion: string;
+  indexado_rag: boolean;
+}
+
+export interface RespuestaArchivos {
+  carpetas: string[];
+  archivos: ArchivoRecurso[];
+}
