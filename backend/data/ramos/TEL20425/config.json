@@ -1,0 +1,33 @@
+{
+  "codigo": "TEL20425",
+  "nombre": "Laboratorio de Redes de Computadores",
+  "departamento": "Departamento de Electrónica e Informática",
+  "profesor": "Prof. Coord. Laboratorio de Redes",
+  "descripcion": "Diseño, configuración y análisis de redes de computadores, enrutamiento, subnetting y protocolos TCP/IP.",
+  "documentos": [
+    "Guia_Laboratorio_1_Subnetting_VLAN.pdf",
+    "Rubrica_Informes_TEL20425.pdf",
+    "Manual_Wireshark_Capturas.pdf"
+  ],
+  "reglas_socraticas": "Guía al estudiante mediante preguntas sobre direccionamiento IP, máscaras de subred y análisis de tramas. Nunca entregues comandos de configuración de routers resueltos ni cálculos directos de subredes.",
+  "faqs_jeff": [
+    {
+      "id": "tel_entrega",
+      "categoria": "Fechas y Entregas",
+      "palabras_clave": ["entrega", "informe", "plazo", "laboratorio 1", "cuando se entrega", "fecha"],
+      "respuesta": "📌 [Jeff - Info Administrativa TEL20425]: La entrega del Informe del Laboratorio 1 vence el viernes a las 23:59 hrs a través de AULA USM en formato PDF."
+    },
+    {
+      "id": "tel_sala",
+      "categoria": "Ubicación y Horarios",
+      "palabras_clave": ["sala", "ubicacion", "donde", "edificio", "laboratorio", "horario"],
+      "respuesta": "📌 [Jeff - Info Administrativa TEL20425]: Las sesiones prácticas de TEL20425 se realizan en el Laboratorio de Redes de Computadores (Pabellón C, Sala C-204)."
+    },
+    {
+      "id": "tel_bibliografia",
+      "categoria": "Bibliografía y Software",
+      "palabras_clave": ["libro", "bibliografia", "wireshark", "herramienta", "simulador", "packet tracer", "gns3"],
+      "respuesta": "📌 [Jeff - Info Administrativa TEL20425]: El texto guía es 'Computer Networking: A Top-Down Approach' (Kurose & Ross). Para las experiencias utilizamos Wireshark y GNS3/Packet Tracer."
+    }
+  ]
+}
