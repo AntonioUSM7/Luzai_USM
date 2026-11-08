@@ -65,12 +65,12 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ ramo }) => {
   };
 
   return (
-    <main className="flex-1 flex flex-col h-full bg-slate-50 overflow-hidden">
-      {/* Cabecera del ramo del alumno */}
-      <header className="bg-white border-b border-slate-200 px-6 py-3.5 flex items-center justify-between">
+    <main className="flex-1 flex flex-col h-full bg-[#F4F6F9] overflow-hidden">
+      {/* Cabecera del ramo del alumno (Estilo AULA USM) */}
+      <header className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between shadow-sm">
         <div>
           <div className="flex items-center gap-2">
-            <span className="text-xs font-bold px-2 py-0.5 rounded bg-usm-navy text-usm-gold">
+            <span className="text-xs font-bold px-2 py-0.5 rounded bg-usm-blue text-white">
               {ramo.codigo}
             </span>
             <h2 className="text-base font-bold text-slate-800">{ramo.nombre}</h2>
@@ -89,14 +89,14 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ ramo }) => {
             <div
               className={`max-w-xl rounded-2xl px-4 py-3 text-sm leading-relaxed ${
                 msg.autor === 'usuario'
-                  ? 'bg-usm-navy text-white rounded-br-none'
+                  ? 'bg-usm-blue text-white rounded-br-none shadow'
                   : 'bg-white border border-slate-200 text-slate-800 rounded-bl-none shadow-sm'
               }`}
             >
               <p className="whitespace-pre-wrap">{msg.texto}</p>
               <span
                 className={`text-[10px] mt-1.5 block text-right ${
-                  msg.autor === 'usuario' ? 'text-slate-300' : 'text-slate-400'
+                  msg.autor === 'usuario' ? 'text-blue-100' : 'text-slate-400'
                 }`}
               >
                 {msg.hora}
@@ -115,12 +115,12 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ ramo }) => {
           onChange={(e) => setEntrada(e.target.value)}
           placeholder={`Escribe tu consulta sobre ${ramo.codigo}...`}
           disabled={cargando}
-          className="flex-1 rounded-xl border border-slate-300 px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-usm-navy"
+          className="flex-1 rounded-xl border border-slate-300 px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-usm-blue"
         />
         <button
           type="submit"
           disabled={cargando || !entrada.trim()}
-          className="bg-usm-navy hover:bg-usm-blue text-white font-medium px-4 py-2.5 rounded-xl text-sm flex items-center gap-2 transition disabled:opacity-50"
+          className="bg-usm-blue hover:bg-usm-dark text-white font-medium px-5 py-2.5 rounded-xl text-sm flex items-center gap-2 transition shadow disabled:opacity-50"
         >
           <Send className="w-4 h-4" />
           Enviar

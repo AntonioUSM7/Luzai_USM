@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { RolUsuario, Usuario } from '../types';
 import { GraduationCap, UserCheck, LogIn } from 'lucide-react';
+import logoUsm from '../resources/marca-color.png';
 
 interface LoginProps {
   onLogin: (usuario: Usuario) => void;
@@ -20,9 +21,11 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
     <div className="min-h-screen w-screen flex items-center justify-center bg-slate-100 p-4">
       <div className="w-full max-w-md bg-white border border-slate-200 rounded-2xl shadow-sm p-8">
         <div className="text-center mb-6">
-          <div className="w-12 h-12 bg-usm-navy text-usm-gold font-bold text-2xl rounded-xl flex items-center justify-center mx-auto mb-3 shadow">
-            U
-          </div>
+          <img
+            src={logoUsm}
+            alt="Logo USM"
+            className="h-12 mx-auto mb-4 object-contain"
+          />
           <h1 className="text-2xl font-bold text-slate-800">LuzAI USM</h1>
           <p className="text-sm text-slate-500 mt-1">Plataforma Académica Institucional</p>
         </div>
@@ -38,7 +41,7 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
                 onClick={() => setRol('alumno')}
                 className={`py-3 px-3 rounded-xl border flex flex-col items-center gap-1.5 transition text-xs font-medium ${
                   rol === 'alumno'
-                    ? 'border-usm-navy bg-usm-navy text-white shadow-sm'
+                    ? 'border-usm-blue bg-usm-blue text-white shadow-sm'
                     : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
                 }`}
               >
@@ -51,7 +54,7 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
                 onClick={() => setRol('docente')}
                 className={`py-3 px-3 rounded-xl border flex flex-col items-center gap-1.5 transition text-xs font-medium ${
                   rol === 'docente'
-                    ? 'border-usm-navy bg-usm-navy text-white shadow-sm'
+                    ? 'border-usm-blue bg-usm-blue text-white shadow-sm'
                     : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
                 }`}
               >
@@ -70,13 +73,13 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
               value={nombre}
               onChange={(e) => setNombre(e.target.value)}
               placeholder={rol === 'alumno' ? 'ej: antonio.alumno@usm.cl' : 'ej: profesor.redes@usm.cl'}
-              className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-usm-navy"
+              className="w-full px-4 py-2.5 rounded-xl border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-usm-blue"
             />
           </div>
 
           <button
             type="submit"
-            className="w-full bg-usm-navy hover:bg-usm-blue text-white font-semibold py-3 px-4 rounded-xl text-sm flex items-center justify-center gap-2 transition shadow"
+            className="w-full bg-usm-blue hover:bg-usm-dark text-white font-semibold py-3 px-4 rounded-xl text-sm flex items-center justify-center gap-2 transition shadow"
           >
             <LogIn className="w-4 h-4" />
             Ingresar al Portal
