@@ -3,6 +3,8 @@
 **Proyecto:** LuzAI USM - Tutor Socrático Inteligente  
 **Entorno de Hardware recomendado:** CPU AMD Ryzen 7 3700X, 16 GB RAM, GPU NVIDIA GTX 1660 Ti (6 GB VRAM).
 
+UWU ahora voy a desarrollar esto en una branch mas uwur u know what i mean
+
 ---
 
 ## 1. Visión General del RAG en LuzAI
