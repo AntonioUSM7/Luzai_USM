@@ -1,6 +1,16 @@
 import { Ramo, ArchivoRecurso, RespuestaArchivos } from '../types';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+export const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
+/**
+ * Convierte rutas relativas de la API (ej. /api/ramos/.../imagenes/foo.png)
+ * en URLs absolutas para que imágenes y enlaces funcionen desde el navegador.
+ */
+export function resolverUrlApi(url?: string | null): string | undefined {
+  if (!url) return undefined;
+  if (url.startsWith('/api/')) return `${API_URL}${url}`;
+  return url;
+}
 
 /**
  * Obtiene la lista de asignaturas activas desde el backend FastAPI.

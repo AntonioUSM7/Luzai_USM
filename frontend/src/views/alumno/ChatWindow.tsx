@@ -1,7 +1,36 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Send } from 'lucide-react';
+import ReactMarkdown, { type Components } from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
 import { Ramo, MensajeChat } from '../../types';
-import { enviarMensajeChat } from '../../services/api';
+import { enviarMensajeChat, resolverUrlApi } from '../../services/api';
+
+const componentesMarkdown: Components = {
+  img({ node: _node, src, alt, ...props }) {
+    return (
+      <img
+        src={resolverUrlApi(typeof src === 'string' ? src : undefined)}
+        alt={alt ?? ''}
+        loading="lazy"
+        {...props}
+      />
+    );
+  },
+  a({ node: _node, href, children, ...props }) {
+    return (
+      <a
+        href={resolverUrlApi(typeof href === 'string' ? href : undefined)}
+        target="_blank"
+        rel="noopener noreferrer"
+        {...props}
+      >
+        {children}
+      </a>
+    );
+  },
+};
 
 interface ChatWindowProps {
   ramo: Ramo;
@@ -93,7 +122,19 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ ramo }) => {
                   : 'bg-white border border-slate-200 text-slate-800 rounded-bl-none shadow-sm'
               }`}
             >
-              <p className="whitespace-pre-wrap">{msg.texto}</p>
+              {msg.autor === 'usuario' ? (
+                <p className="whitespace-pre-wrap">{msg.texto}</p>
+              ) : (
+                <div className="markdown-content">
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm, remarkMath]}
+                    rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
+                    components={componentesMarkdown}
+                  >
+                    {msg.texto}
+                  </ReactMarkdown>
+                </div>
+              )}
               <span
                 className={`text-[10px] mt-1.5 block text-right ${
                   msg.autor === 'usuario' ? 'text-blue-100' : 'text-slate-400'

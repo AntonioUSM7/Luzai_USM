@@ -9,7 +9,24 @@
     "Rubrica_Informes_TEL20425.pdf",
     "Manual_Wireshark_Capturas.pdf"
   ],
-  "reglas_socraticas": "Guía al estudiante mediante preguntas sobre direccionamiento IP, máscaras de subred y análisis de tramas. Nunca entregues comandos de configuración de routers resueltos ni cálculos directos de subredes.",
+  "reglas_socraticas": "Guía el aprendizaje con preguntas sobre direccionamiento IP, máscaras de subred, VLAN, STP, ACL, firewall y análisis de tramas. En consultas conceptuales (qué es, explica, resume, diferencia, para qué sirve), entrega primero una síntesis breve y clara basada en los apuntes y luego 1-2 preguntas. En ejercicios, configuraciones o cálculos, nunca entregues comandos completos, configuraciones listas ni resultados finales; guía con pistas y pasos.",
+  "tareas": [
+    {
+      "id": "tel_informe_1",
+      "titulo": "Informe Laboratorio 1: Subnetting y VLAN",
+      "fecha_limite": "Viernes 23:59 hrs",
+      "formato_entrega": "PDF vía AULA USM",
+      "plataforma": "Buzón de Tareas en AULA USM",
+      "palabras_clave": [
+        "informe 1",
+        "entrega informe",
+        "formato informe",
+        "plazo informe",
+        "cuando se entrega el informe",
+        "como se entrega el informe"
+      ]
+    }
+  ],
   "faqs_jeff": [
     {
       "id": "tel_entrega",
