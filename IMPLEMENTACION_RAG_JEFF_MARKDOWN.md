@@ -396,7 +396,7 @@ El modelo por defecto del tutor sigue siendo `qwen2.5:3b`.
 ### Levantar el sistema
 
 ```bash
-cd /home/knsyx/Documentos/ADMIN/proyect_luzai/Luzai_USM
+cd /Luzai_USM
 docker compose up -d --build
 ```
 
