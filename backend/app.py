@@ -7,13 +7,13 @@ import shutil
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import AsyncIterator, Dict, Any, List, Optional
+from typing import AsyncIterator, Dict, Any, List, Literal, Optional
 
 import httpx
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import consultas_store
 import rag_engine
@@ -39,15 +39,22 @@ app.add_middleware(
 
 BASE_DATA_DIR = Path(__file__).resolve().parent / "data" / "ramos"
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
-OLLAMA_LLM_MODEL = os.getenv("OLLAMA_LLM_MODEL", "qwen2.5:3b")
+OLLAMA_LLM_MODEL = os.getenv("OLLAMA_LLM_MODEL", "qwen3:8b")
+OLLAMA_THINK = os.getenv("OLLAMA_THINK", "false").strip().lower() in ("1", "true", "yes")
 OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "8192"))
 AUTO_REINDEX = os.getenv("RAG_AUTO_REINDEX", "1") not in ("0", "false", "False")
 RAG_OFFTOPIC_SCORE = float(os.getenv("RAG_OFFTOPIC_SCORE", "0.65"))
 
 
+class MensajeHistorial(BaseModel):
+    rol: Literal["user", "assistant"]
+    contenido: str
+
+
 class ConsultaChat(BaseModel):
     codigo_ramo: str
     mensaje: str
+    historial: List[MensajeHistorial] = Field(default_factory=list)
 
 
 class CrearCarpetaReq(BaseModel):
@@ -65,6 +72,12 @@ class ResponderConsultaProfesorReq(BaseModel):
     guardar_en_jeff: bool = False
     categoria: str = "Consultas Resueltas"
     palabras_clave: Optional[List[str]] = None
+
+
+class ConfigSocraticaReq(BaseModel):
+    reglas_socraticas: str = ""
+    estilo: Literal["estricto", "equilibrado", "paso_a_paso"] = "equilibrado"
+    extension: Literal["corta", "media"] = "media"
 
 
 def obtener_lista_ramos():
@@ -365,6 +378,87 @@ def responder_consulta_profesor(
     return {"status": "ok", **resultado}
 
 
+_ESTILOS_SOCRATICOS = {
+    "estricto": (
+        "ESTILO DEL DOCENTE (ESTRICTO): responde únicamente con preguntas guía breves y "
+        "pistas mínimas para que el estudiante deduzca el razonamiento por sí mismo. "
+        "No entregues explicaciones largas ni pasos resueltos."
+    ),
+    "equilibrado": (
+        "ESTILO DEL DOCENTE (EQUILIBRADO): entrega una síntesis conceptual breve cuando "
+        "corresponda y acompáñala siempre con 1-2 preguntas guía para verificar comprensión."
+    ),
+    "paso_a_paso": (
+        "ESTILO DEL DOCENTE (PASO A PASO): divide la orientación en pasos progresivos pequeños; "
+        "guía solo el paso actual con una pista clara y pregunta al estudiante antes de avanzar."
+    ),
+}
+
+_EXTENSIONES_SOCRATICAS = {
+    "corta": "EXTENSIÓN DE RESPUESTA (CORTA): sé conciso (máximo 1 párrafo breve o 3 viñetas y 1 pregunta).",
+    "media": "EXTENSIÓN DE RESPUESTA (MEDIA): desarrolla una guía clara y estructurada de 1 a 2 párrafos breves con 1-2 preguntas.",
+}
+
+
+def _obtener_config_socratica(datos_ramo: Dict[str, Any]) -> Dict[str, str]:
+    cfg = datos_ramo.get("config_socratica") or {}
+    estilo = cfg.get("estilo", "equilibrado")
+    if estilo not in _ESTILOS_SOCRATICOS:
+        estilo = "equilibrado"
+    extension = cfg.get("extension", "media")
+    if extension not in _EXTENSIONES_SOCRATICAS:
+        extension = "media"
+    return {
+        "reglas_socraticas": str(datos_ramo.get("reglas_socraticas", "") or ""),
+        "estilo": estilo,
+        "extension": extension,
+    }
+
+
+@app.get("/api/ramos/{codigo_ramo}/config_socratica")
+def obtener_config_socratica_ramo(codigo_ramo: str):
+    """Devuelve la configuración socrática editable del ramo."""
+    codigo = codigo_ramo.upper()
+    ruta_config = BASE_DATA_DIR / codigo / "config.json"
+    if not ruta_config.exists():
+        raise HTTPException(status_code=404, detail="Ramo no encontrado")
+    with open(ruta_config, "r", encoding="utf-8") as archivo:
+        datos = json.load(archivo)
+    return {"codigo_ramo": codigo, **_obtener_config_socratica(datos)}
+
+
+@app.put("/api/ramos/{codigo_ramo}/config_socratica")
+def actualizar_config_socratica_ramo(codigo_ramo: str, req: ConfigSocraticaReq):
+    """Actualiza de forma atómica reglas_socraticas y config_socratica en config.json."""
+    codigo = codigo_ramo.upper()
+    ruta_config = BASE_DATA_DIR / codigo / "config.json"
+
+    with router_jeff._CONFIG_LOCK:
+        if not ruta_config.exists():
+            raise HTTPException(status_code=404, detail="Ramo no encontrado")
+        with open(ruta_config, "r", encoding="utf-8") as archivo:
+            datos = json.load(archivo)
+
+        datos["reglas_socraticas"] = req.reglas_socraticas.strip()
+        datos["config_socratica"] = {
+            "estilo": req.estilo,
+            "extension": req.extension,
+        }
+
+        ruta_tmp = ruta_config.with_suffix(".json.tmp")
+        with open(ruta_tmp, "w", encoding="utf-8") as archivo:
+            json.dump(datos, archivo, ensure_ascii=False, indent=2)
+        os.replace(ruta_tmp, ruta_config)
+
+    return {
+        "status": "ok",
+        "codigo_ramo": codigo,
+        "reglas_socraticas": datos["reglas_socraticas"],
+        "estilo": req.estilo,
+        "extension": req.extension,
+    }
+
+
 def _sse(evento: Dict[str, Any]) -> str:
     return f"data: {json.dumps(evento, ensure_ascii=False)}\n\n"
 
@@ -477,7 +571,10 @@ def _construir_system_prompt(
     es_resumen: bool = False,
 ) -> str:
     nombre = datos_ramo.get("nombre", codigo_ramo)
-    reglas = datos_ramo.get("reglas_socraticas", "")
+    cfg_socratica = _obtener_config_socratica(datos_ramo)
+    reglas = cfg_socratica["reglas_socraticas"]
+    estilo_docente = _ESTILOS_SOCRATICOS[cfg_socratica["estilo"]]
+    extension_docente = _EXTENSIONES_SOCRATICAS[cfg_socratica["extension"]]
     temario = _obtener_temario(codigo_ramo)
 
     prompt = (
@@ -487,6 +584,8 @@ def _construir_system_prompt(
         "y configuraciones, guía con preguntas y pistas progresivas sin entregar la solución "
         "completa. En consultas conceptuales, sí puedes explicar y resumir: una explicación breve "
         "no es una solución.\n"
+        f"{estilo_docente}\n"
+        f"{extension_docente}\n"
     )
     if reglas:
         prompt += f"REGLAS DEL RAMO: {reglas}\n"
@@ -658,14 +757,95 @@ def iniciar_reindexacion_automatica() -> None:
     hilo.start()
 
 
-async def _eventos_ollama(system_prompt: str, mensaje: str) -> AsyncIterator[Dict[str, Any]]:
+MAX_HISTORIAL_MENSAJES = 6
+MAX_HISTORIAL_CHARS = 800
+
+
+def _limpiar_historial(historial: List[MensajeHistorial]) -> List[Dict[str, str]]:
+    """Conserva una ventana deslizante corta (últimos 6 mensajes) para cuidar VRAM y latencia."""
+    limpios: List[Dict[str, str]] = []
+    for item in (historial or [])[-MAX_HISTORIAL_MENSAJES:]:
+        contenido = (item.contenido or "").strip()
+        if not contenido:
+            continue
+        if len(contenido) > MAX_HISTORIAL_CHARS:
+            contenido = contenido[:MAX_HISTORIAL_CHARS] + "..."
+        limpios.append({"role": item.rol, "content": contenido})
+    return limpios
+
+
+_PATRON_ADMIN_O_EVALUACION = re.compile(
+    r"\b(presentacion|diapositiva|diapositivas|certamen|prueba|examen|control|tarea|"
+    r"informe|laboratorio|rubrica|nota|notas|calificacion|plazo|fecha|hora|horario|"
+    r"sala|ayudantia|profesor|docente|recuperativa|evaluacion|asistencia|ponderacion|porcentaje)\b"
+)
+
+
+def _es_consulta_admin_o_evaluacion(mensaje: str) -> bool:
+    return bool(_PATRON_ADMIN_O_EVALUACION.search(router_jeff.normalizar(mensaje)))
+
+
+def _detectar_fuera_de_foco_en_respuesta(texto_inicio: str) -> bool:
+    """Detecta si el LLM inició su respuesta declarando que la consulta está fuera de foco."""
+    norm = router_jeff.normalizar(texto_inicio).lstrip("#*-:>• ").strip()
+    return (
+        norm.startswith("fuera de foco")
+        or norm.startswith("esta consulta parece estar fuera del foco")
+        or norm.startswith("esta consulta esta fuera de foco")
+        or norm.startswith("la consulta no esta relacionada con el temario")
+    )
+
+
+def _construir_consulta_contextual(
+    mensaje: str,
+    historial_limpio: List[Dict[str, str]],
+    temario: List[str],
+) -> str:
+    """
+    Si el mensaje es un seguimiento corto sin tema explícito (ej. '¿qué ventajas ofrece?'),
+    lo combina con la última pregunta del alumno del historial para RAG y alcance ($0 GPU).
+    No combina consultas administrativas/evaluativas para no contaminarlas con el tema previo.
+    """
+    if (
+        router_modo.es_saludo(mensaje)
+        or router_modo.menciona_tema_del_ramo(mensaje, temario)
+        or _es_consulta_admin_o_evaluacion(mensaje)
+    ):
+        return mensaje
+
+    if len(mensaje.split()) > 6:
+        return mensaje
+
+    ultimo_user: Optional[str] = None
+    for item in reversed(historial_limpio):
+        if item["role"] != "user":
+            continue
+        if ultimo_user is None:
+            ultimo_user = item["content"]
+        if router_modo.menciona_tema_del_ramo(item["content"], temario):
+            return f"{item['content']} {mensaje}"
+
+    if ultimo_user:
+        return f"{ultimo_user} {mensaje}"
+
+    return mensaje
+
+
+async def _eventos_ollama(
+    system_prompt: str,
+    mensaje: str,
+    historial_limpio: Optional[List[Dict[str, str]]] = None,
+) -> AsyncIterator[Dict[str, Any]]:
+    messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
+    if historial_limpio:
+        messages.extend(historial_limpio)
+    messages.append({"role": "user", "content": mensaje})
+
     payload = {
         "model": OLLAMA_LLM_MODEL,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": mensaje},
-        ],
+        "messages": messages,
         "stream": True,
+        "think": OLLAMA_THINK,
         "options": {"temperature": 0.2, "num_ctx": OLLAMA_NUM_CTX},
     }
 
@@ -739,11 +919,16 @@ async def chat(consulta: ConsultaChat):
 
     modo = router_modo.detectar_modo(consulta.mensaje)
     es_resumen = router_modo.es_solicitud_resumen(consulta.mensaje)
+    historial_limpio = _limpiar_historial(consulta.historial)
+    temario = _obtener_temario(codigo)
+    consulta_contextual = _construir_consulta_contextual(
+        consulta.mensaje, historial_limpio, temario
+    )
 
     # 2. RAG: recupera contexto de los apuntes (en hilo aparte para no bloquear el event loop).
     try:
         fragmentos = await asyncio.to_thread(
-            rag_engine.buscar_fragmentos_relevantes, consulta.mensaje, codigo
+            rag_engine.buscar_fragmentos_relevantes, consulta_contextual, codigo
         )
     except Exception as exc:
         logger.error("Falló la recuperación RAG para %s: %s", codigo, exc)
@@ -765,11 +950,10 @@ async def chat(consulta: ConsultaChat):
 
     # 2c. Guard de fallback estricto ($0 GPU): evita llamar al LLM fuera de foco o sin respaldo RAG.
     cfg_fallback = _obtener_config_fallback(datos_ramo, codigo)
-    temario = _obtener_temario(codigo)
     es_saludo = router_modo.es_saludo(consulta.mensaje)
     fuera_de_foco = (
         not es_saludo
-        and not router_modo.menciona_tema_del_ramo(consulta.mensaje, temario)
+        and not router_modo.menciona_tema_del_ramo(consulta_contextual, temario)
         and max_score < RAG_OFFTOPIC_SCORE
     )
     if fuera_de_foco:
@@ -852,8 +1036,22 @@ async def chat(consulta: ConsultaChat):
             "modo": modo,
             "con_contexto": bool(contexto),
         })
-        async for evento in _eventos_ollama(system_prompt, consulta.mensaje):
+        prefijo_respuesta = ""
+        async for evento in _eventos_ollama(
+            system_prompt, consulta.mensaje, historial_limpio
+        ):
+            if evento.get("tipo") == "token" and len(prefijo_respuesta) < 120:
+                prefijo_respuesta += str(evento.get("contenido") or "")
             yield _sse(evento)
-        yield _sse({"tipo": "fin", "canal": "TUTOR_SOCRATICO"})
+
+        if cfg_fallback["habilitado"] and _detectar_fuera_de_foco_en_respuesta(prefijo_respuesta):
+            yield _sse({
+                "tipo": "fin",
+                "canal": "FALLBACK_DOCENTE",
+                "puede_escalar": cfg_fallback["permitir_escalar_profesor"],
+                "motivo": "fuera_de_foco",
+            })
+        else:
+            yield _sse({"tipo": "fin", "canal": "TUTOR_SOCRATICO"})
 
     return StreamingResponse(generador_ollama(), media_type="text/event-stream")

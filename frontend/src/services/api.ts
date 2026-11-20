@@ -4,6 +4,7 @@ import {
   RespuestaArchivos,
   EventoMetadataChat,
   ConsultaProfesor,
+  ConfigSocratica,
 } from '../types';
 
 export const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
@@ -30,6 +31,11 @@ export async function obtenerRamos(): Promise<Ramo[]> {
   return datos.ramos || [];
 }
 
+export interface MensajeHistorialApi {
+  rol: 'user' | 'assistant';
+  contenido: string;
+}
+
 /**
  * Envía una consulta de chat al backend y procesa la respuesta en streaming palabra por palabra.
  */
@@ -37,7 +43,8 @@ export async function enviarMensajeChat(
   codigoRamo: string,
   mensaje: string,
   onToken: (token: string) => void,
-  onMetadata?: (meta: EventoMetadataChat) => void
+  onMetadata?: (meta: EventoMetadataChat) => void,
+  historial: MensajeHistorialApi[] = []
 ): Promise<void> {
   const respuesta = await fetch(`${API_URL}/api/chat`, {
     method: 'POST',
@@ -45,6 +52,7 @@ export async function enviarMensajeChat(
     body: JSON.stringify({
       codigo_ramo: codigoRamo,
       mensaje: mensaje.trim(),
+      historial: historial.slice(-6),
     }),
   });
 
@@ -254,6 +262,38 @@ export async function responderConsultaProfesor(
   if (!respuesta.ok) {
     const detalle = await respuesta.json().catch(() => ({}));
     throw new Error(detalle.detail || 'Error al actualizar la consulta');
+  }
+
+  return respuesta.json();
+}
+
+/**
+ * Obtiene la configuración socrática editable de un ramo.
+ */
+export async function obtenerConfigSocratica(codigoRamo: string): Promise<ConfigSocratica> {
+  const respuesta = await fetch(`${API_URL}/api/ramos/${codigoRamo}/config_socratica`);
+  if (!respuesta.ok) {
+    throw new Error('Error al cargar la configuración socrática del ramo');
+  }
+  return respuesta.json();
+}
+
+/**
+ * Actualiza las reglas socráticas, estilo y extensión del tutor para un ramo.
+ */
+export async function actualizarConfigSocratica(
+  codigoRamo: string,
+  payload: Pick<ConfigSocratica, 'reglas_socraticas' | 'estilo' | 'extension'>
+): Promise<ConfigSocratica> {
+  const respuesta = await fetch(`${API_URL}/api/ramos/${codigoRamo}/config_socratica`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (!respuesta.ok) {
+    const detalle = await respuesta.json().catch(() => ({}));
+    throw new Error(detalle.detail || 'Error al guardar la configuración socrática');
   }
 
   return respuesta.json();

@@ -1,5 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Ramo, ArchivoRecurso, ConsultaProfesor } from '../../types';
+import {
+  Ramo,
+  ArchivoRecurso,
+  ConsultaProfesor,
+  EstiloSocratico,
+  ExtensionSocratica,
+} from '../../types';
 import {
   ArrowLeft,
   BookOpen,
@@ -19,6 +25,7 @@ import {
   CornerDownRight,
   MessageSquareMore,
   Send,
+  Save,
 } from 'lucide-react';
 import {
   listarArchivosRamo,
@@ -28,6 +35,8 @@ import {
   eliminarCarpetaRamo,
   listarConsultasProfesor,
   responderConsultaProfesor,
+  obtenerConfigSocratica,
+  actualizarConfigSocratica,
 } from '../../services/api';
 
 interface DocenteViewProps {
@@ -52,6 +61,13 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
     Record<string, { texto: string; guardarEnJeff: boolean; palabrasClave: string; categoria: string }>
   >({});
   const [procesandoConsultaId, setProcesandoConsultaId] = useState<string | null>(null);
+
+  // Estado de configuración socrática del ramo
+  const [reglasSocraticas, setReglasSocraticas] = useState<string>('');
+  const [estiloSocratico, setEstiloSocratico] = useState<EstiloSocratico>('equilibrado');
+  const [extensionSocratica, setExtensionSocratica] = useState<ExtensionSocratica>('media');
+  const [cargandoSocratica, setCargandoSocratica] = useState<boolean>(false);
+  const [guardandoSocratica, setGuardandoSocratica] = useState<boolean>(false);
 
   // Estado del gestor de archivos
   const [carpetas, setCarpetas] = useState<string[]>([]);
@@ -135,11 +151,49 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
     }
   };
 
+  const cargarConfigSocraticaRamo = async () => {
+    if (!ramoActivo) return;
+    setCargandoSocratica(true);
+    try {
+      const cfg = await obtenerConfigSocratica(ramoActivo.codigo);
+      setReglasSocraticas(cfg.reglas_socraticas || '');
+      setEstiloSocratico(cfg.estilo || 'equilibrado');
+      setExtensionSocratica(cfg.extension || 'media');
+    } catch (err) {
+      console.error(err);
+      mostrarMensaje('error', 'Error al cargar la configuración socrática.');
+    } finally {
+      setCargandoSocratica(false);
+    }
+  };
+
   useEffect(() => {
     cargarDatosRamo();
     cargarConsultasRamo();
+    cargarConfigSocraticaRamo();
     setCarpetaSeleccionada(null);
   }, [ramoActivo?.codigo]);
+
+  const manejarGuardarConfigSocratica = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!ramoActivo) return;
+    setGuardandoSocratica(true);
+    try {
+      await actualizarConfigSocratica(ramoActivo.codigo, {
+        reglas_socraticas: reglasSocraticas,
+        estilo: estiloSocratico,
+        extension: extensionSocratica,
+      });
+      mostrarMensaje('exito', `Reglas socráticas de ${ramoActivo.codigo} guardadas correctamente.`);
+    } catch (err) {
+      mostrarMensaje(
+        'error',
+        err instanceof Error ? err.message : 'No se pudo guardar la configuración socrática.'
+      );
+    } finally {
+      setGuardandoSocratica(false);
+    }
+  };
 
   const actualizarBorrador = (
     consultaId: string,
@@ -1006,13 +1060,126 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
           )}
 
           {subTab === 'socratico' && (
-            <div className="bg-white p-8 rounded-2xl border border-slate-200 text-center space-y-2">
-              <Sparkles className="w-10 h-10 text-usm-gold mx-auto" />
-              <h3 className="text-base font-bold text-slate-800">Reglas Socráticas del Ramo</h3>
-              <p className="text-xs text-slate-500 max-w-md mx-auto">
-                Aquí el docente define el tono del tutor y las restricciones estrictas para no entregar respuestas resueltas.
-              </p>
-            </div>
+            <form
+              onSubmit={manejarGuardarConfigSocratica}
+              className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-6"
+            >
+              <div className="flex items-start justify-between gap-4 border-b border-slate-100 pb-4">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 rounded-xl bg-amber-50 text-usm-gold border border-amber-200">
+                    <Sparkles className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-800">
+                      Reglas Socráticas del Tutor ({ramoActivo.codigo})
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Define cómo responde el modelo generativo (Qwen3 8B) cuando apoya a tus estudiantes con los apuntes del curso.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {cargandoSocratica ? (
+                <p className="text-xs text-slate-500 py-6 text-center">
+                  Cargando configuración socrática...
+                </p>
+              ) : (
+                <>
+                  <div className="space-y-2">
+                    <label className="block text-xs font-bold text-slate-700">
+                      Estilo pedagógico
+                    </label>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                      {(
+                        [
+                          {
+                            id: 'estricto',
+                            titulo: 'Estricto (Solo preguntas)',
+                            desc: 'Responde con preguntas guía y pistas mínimas sin explicaciones largas.',
+                          },
+                          {
+                            id: 'equilibrado',
+                            titulo: 'Equilibrado (Recomendado)',
+                            desc: 'Da una síntesis conceptual breve y cierra con 1–2 preguntas guía.',
+                          },
+                          {
+                            id: 'paso_a_paso',
+                            titulo: 'Paso a paso',
+                            desc: 'Divide el problema en pasos pequeños y valida cada etapa con el alumno.',
+                          },
+                        ] as const
+                      ).map((op) => (
+                        <button
+                          key={op.id}
+                          type="button"
+                          onClick={() => setEstiloSocratico(op.id)}
+                          className={`text-left p-3.5 rounded-xl border transition ${
+                            estiloSocratico === op.id
+                              ? 'border-usm-blue bg-blue-50/60 ring-1 ring-usm-blue'
+                              : 'border-slate-200 hover:border-slate-300 bg-white'
+                          }`}
+                        >
+                          <div className="text-xs font-bold text-slate-800">{op.titulo}</div>
+                          <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">{op.desc}</p>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="block text-xs font-bold text-slate-700">
+                      Extensión de respuesta
+                    </label>
+                    <div className="flex flex-wrap gap-3">
+                      {(
+                        [
+                          { id: 'corta', label: 'Corta (1 párrafo breve o 3 viñetas)' },
+                          { id: 'media', label: 'Media (1–2 párrafos estructurados)' },
+                        ] as const
+                      ).map((op) => (
+                        <button
+                          key={op.id}
+                          type="button"
+                          onClick={() => setExtensionSocratica(op.id)}
+                          className={`px-3.5 py-2 rounded-xl text-xs font-semibold border transition ${
+                            extensionSocratica === op.id
+                              ? 'border-usm-blue bg-usm-blue text-white shadow-sm'
+                              : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                          }`}
+                        >
+                          {op.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="block text-xs font-bold text-slate-700">
+                      Instrucciones y restricciones específicas del ramo
+                    </label>
+                    <textarea
+                      rows={5}
+                      value={reglasSocraticas}
+                      onChange={(e) => setReglasSocraticas(e.target.value)}
+                      placeholder="Ej.: Jamás entregues el resultado numérico final ni comandos completos. Usa analogías físicas y exige que el alumno identifique las condiciones de borde."
+                      className="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-xs leading-relaxed focus:outline-none focus:ring-2 focus:ring-usm-blue"
+                    />
+                  </div>
+
+                  <div className="flex justify-end pt-2 border-t border-slate-100">
+                    <button
+                      type="submit"
+                      disabled={guardandoSocratica}
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold bg-usm-blue hover:bg-usm-dark text-white shadow-sm transition disabled:opacity-50"
+                    >
+                      <Save className="w-4 h-4" />
+                      {guardandoSocratica ? 'Guardando...' : 'Guardar configuración socrática'}
+                    </button>
+                  </div>
+                </>
+              )}
+            </form>
           )}
 
           {subTab === 'analitica' && (

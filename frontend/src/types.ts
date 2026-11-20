@@ -51,6 +51,16 @@ export interface ConsultaProfesor {
   palabras_clave_sugeridas: string[];
 }
 
+export type EstiloSocratico = 'estricto' | 'equilibrado' | 'paso_a_paso';
+export type ExtensionSocratica = 'corta' | 'media';
+
+export interface ConfigSocratica {
+  codigo_ramo?: string;
+  reglas_socraticas: string;
+  estilo: EstiloSocratico;
+  extension: ExtensionSocratica;
+}
+
 export interface ArchivoRecurso {
   nombre: string;
   carpeta: string;

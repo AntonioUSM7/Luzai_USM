@@ -5,7 +5,12 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import { Ramo, MensajeChat } from '../../types';
-import { enviarMensajeChat, enviarConsultaProfesor, resolverUrlApi } from '../../services/api';
+import {
+  enviarMensajeChat,
+  enviarConsultaProfesor,
+  resolverUrlApi,
+  type MensajeHistorialApi,
+} from '../../services/api';
 
 const componentesMarkdown: Components = {
   img({ node: _node, src, alt, ...props }) {
@@ -62,6 +67,19 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ ramo }) => {
     if (!entrada.trim() || cargando) return;
 
     const texto = entrada.trim();
+    const historial: MensajeHistorialApi[] = mensajes
+      .filter(
+        (m) =>
+          !m.id.startsWith('bienvenida-') &&
+          m.texto.trim().length > 0 &&
+          !m.texto.startsWith('⚠️ Error al comunicarse')
+      )
+      .slice(-6)
+      .map((m) => ({
+        rol: m.autor === 'usuario' ? 'user' : 'assistant',
+        contenido: m.texto,
+      }));
+
     const idUsuario = `user-${Date.now()}`;
     const idAsistente = `bot-${Date.now() + 1}`;
     const hora = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -98,7 +116,8 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ ramo }) => {
                 : m
             )
           );
-        }
+        },
+        historial
       );
     } catch {
       setMensajes((prev) =>

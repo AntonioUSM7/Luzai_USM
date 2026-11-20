@@ -10,6 +10,10 @@
     "Formulario_Oficial_Laplace_Fourier.pdf"
   ],
   "reglas_socraticas": "Guía paso a paso el planteamiento de integrales de línea, teorema de Green/Stokes y separación de variables en EDPs. Jamás resuelvas la integral completa ni entregues el resultado numérico final.",
+  "config_socratica": {
+    "estilo": "equilibrado",
+    "extension": "media"
+  },
   "config_fallback": {
     "habilitado": true,
     "permitir_escalar_profesor": true,
