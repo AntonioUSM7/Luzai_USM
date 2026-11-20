@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 
+
 # Node / Frontend
 node_modules/
 .vite/
@@ -31,6 +32,10 @@ venv.bak/
 htmlcov/
 .mypy_cache/
 .ruff_cache/
+backend/data/ramos/*/chroma/
+backend/data/ramos/*/imagenes/
+backend/data/analytics/*.jsonl
+
 
 # IDEs & Editors
 .vscode/

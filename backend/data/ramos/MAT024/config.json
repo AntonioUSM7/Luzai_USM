@@ -10,6 +10,23 @@
     "Formulario_Oficial_Laplace_Fourier.pdf"
   ],
   "reglas_socraticas": "Guía paso a paso el planteamiento de integrales de línea, teorema de Green/Stokes y separación de variables en EDPs. Jamás resuelvas la integral completa ni entregues el resultado numérico final.",
+  "tareas": [
+    {
+      "id": "mat_tarea_1",
+      "titulo": "Tarea 1: Modelación de EDP en 2D",
+      "fecha_limite": "Viernes 24 de noviembre, 23:59 hrs",
+      "formato_entrega": "Jupyter Notebook (.ipynb) comprimido en .zip junto a informe PDF (máx. 4 páginas)",
+      "plataforma": "Buzón de Tareas en AULA USM",
+      "palabras_clave": [
+        "tarea 1",
+        "entrega tarea",
+        "formato tarea",
+        "plazo tarea",
+        "cuando se entrega la tarea",
+        "como se entrega la tarea"
+      ]
+    }
+  ],
   "faqs_jeff": [
     {
       "id": "mat_certamen",
