@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Ramo, ArchivoRecurso } from '../../types';
+import { Ramo, ArchivoRecurso, ConsultaProfesor } from '../../types';
 import {
   ArrowLeft,
   BookOpen,
@@ -17,6 +17,8 @@ import {
   X,
   Plus,
   CornerDownRight,
+  MessageSquareMore,
+  Send,
 } from 'lucide-react';
 import {
   listarArchivosRamo,
@@ -24,6 +26,8 @@ import {
   eliminarArchivoRamo,
   crearCarpetaRamo,
   eliminarCarpetaRamo,
+  listarConsultasProfesor,
+  responderConsultaProfesor,
 } from '../../services/api';
 
 interface DocenteViewProps {
@@ -38,7 +42,16 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
   onSeleccionarRamo,
 }) => {
   // Pestaña activa dentro del ramo
-  const [subTab, setSubTab] = useState<'archivos' | 'jeff' | 'socratico' | 'analitica'>('archivos');
+  const [subTab, setSubTab] = useState<'archivos' | 'consultas' | 'jeff' | 'socratico' | 'analitica'>('archivos');
+
+  // Estado del buzón de consultas escaladas por alumnos
+  const [consultas, setConsultas] = useState<ConsultaProfesor[]>([]);
+  const [cargandoConsultas, setCargandoConsultas] = useState<boolean>(false);
+  const [filtroConsultas, setFiltroConsultas] = useState<'pendiente' | 'resuelta' | 'descartada' | 'todas'>('pendiente');
+  const [borradoresRespuesta, setBorradoresRespuesta] = useState<
+    Record<string, { texto: string; guardarEnJeff: boolean; palabrasClave: string; categoria: string }>
+  >({});
+  const [procesandoConsultaId, setProcesandoConsultaId] = useState<string | null>(null);
 
   // Estado del gestor de archivos
   const [carpetas, setCarpetas] = useState<string[]>([]);
@@ -94,10 +107,105 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
     }
   };
 
+  const cargarConsultasRamo = async () => {
+    if (!ramoActivo) return;
+    setCargandoConsultas(true);
+    try {
+      const lista = await listarConsultasProfesor(ramoActivo.codigo);
+      setConsultas(lista);
+      setBorradoresRespuesta((prev) => {
+        const siguiente = { ...prev };
+        for (const item of lista) {
+          if (!siguiente[item.id]) {
+            siguiente[item.id] = {
+              texto: item.respuesta_profesor || '',
+              guardarEnJeff: true,
+              palabrasClave: (item.palabras_clave_sugeridas || []).join(', '),
+              categoria: 'Consultas Resueltas',
+            };
+          }
+        }
+        return siguiente;
+      });
+    } catch (err) {
+      console.error(err);
+      mostrarMensaje('error', 'Error al cargar las consultas de los alumnos.');
+    } finally {
+      setCargandoConsultas(false);
+    }
+  };
+
   useEffect(() => {
     cargarDatosRamo();
+    cargarConsultasRamo();
     setCarpetaSeleccionada(null);
   }, [ramoActivo?.codigo]);
+
+  const actualizarBorrador = (
+    consultaId: string,
+    cambios: Partial<{ texto: string; guardarEnJeff: boolean; palabrasClave: string; categoria: string }>
+  ) => {
+    setBorradoresRespuesta((prev) => ({
+      ...prev,
+      [consultaId]: {
+        texto: prev[consultaId]?.texto ?? '',
+        guardarEnJeff: prev[consultaId]?.guardarEnJeff ?? true,
+        palabrasClave: prev[consultaId]?.palabrasClave ?? '',
+        categoria: prev[consultaId]?.categoria ?? 'Consultas Resueltas',
+        ...cambios,
+      },
+    }));
+  };
+
+  const manejarResponderConsulta = async (
+    consulta: ConsultaProfesor,
+    estado: 'resuelta' | 'descartada'
+  ) => {
+    if (!ramoActivo) return;
+    const borrador = borradoresRespuesta[consulta.id] || {
+      texto: '',
+      guardarEnJeff: false,
+      palabrasClave: (consulta.palabras_clave_sugeridas || []).join(', '),
+      categoria: 'Consultas Resueltas',
+    };
+
+    const guardarEnJeff = estado === 'resuelta' && borrador.guardarEnJeff && borrador.texto.trim().length > 0;
+    const claves = borrador.palabrasClave
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s.length >= 3);
+
+    if (guardarEnJeff && claves.length === 0) {
+      mostrarMensaje('error', 'Agrega al menos una palabra clave (3+ caracteres) para guardar en Jeff.');
+      return;
+    }
+
+    setProcesandoConsultaId(consulta.id);
+    try {
+      const resp = await responderConsultaProfesor(ramoActivo.codigo, consulta.id, {
+        estado,
+        respuesta_profesor: estado === 'resuelta' ? borrador.texto.trim() || undefined : undefined,
+        guardar_en_jeff: guardarEnJeff,
+        categoria: borrador.categoria.trim() || 'Consultas Resueltas',
+        palabras_clave: guardarEnJeff ? claves : undefined,
+      });
+      setConsultas((prev) => prev.map((c) => (c.id === consulta.id ? resp.consulta : c)));
+      if (estado === 'descartada') {
+        mostrarMensaje('exito', 'Consulta descartada.');
+      } else if (guardarEnJeff) {
+        mostrarMensaje('exito', 'Respuesta guardada y agregada a las FAQs de Jeff ($0 GPU).');
+      } else {
+        mostrarMensaje('exito', 'Consulta marcada como resuelta.');
+      }
+    } catch (err) {
+      mostrarMensaje(
+        'error',
+        err instanceof Error ? err.message : 'No se pudo actualizar la consulta.'
+      );
+    } finally {
+      setProcesandoConsultaId(null);
+    }
+  };
 
   // Crear nueva carpeta
   const manejarCrearCarpeta = async (e: React.FormEvent) => {
@@ -321,6 +429,23 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
           <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-100 text-slate-600 font-normal">
             {archivos.length}
           </span>
+        </button>
+
+        <button
+          onClick={() => setSubTab('consultas')}
+          className={`py-3 text-xs font-bold border-b-2 flex items-center gap-2 transition ${
+            subTab === 'consultas'
+              ? 'border-usm-blue text-usm-blue'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <MessageSquareMore className="w-4 h-4" />
+          <span>Consultas de Alumnos</span>
+          {consultas.filter((c) => c.estado === 'pendiente').length > 0 && (
+            <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-amber-100 text-amber-800 font-bold">
+              {consultas.filter((c) => c.estado === 'pendiente').length}
+            </span>
+          )}
         </button>
 
         <button
@@ -648,6 +773,224 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                   )}
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* BUZÓN DE CONSULTAS ESCALADAS AL PROFESOR */}
+          {subTab === 'consultas' && (
+            <div className="space-y-4">
+              <div className="bg-white p-5 rounded-2xl border border-slate-200 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-800">
+                    Buzón de Consultas Escaladas ({ramoActivo.codigo})
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Preguntas que ni Jeff ni el tutor socrático pudieron responder con respaldo y que los estudiantes enviaron para tu revisión.
+                  </p>
+                </div>
+                <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl">
+                  {(['pendiente', 'resuelta', 'descartada', 'todas'] as const).map((estado) => (
+                    <button
+                      key={estado}
+                      type="button"
+                      onClick={() => setFiltroConsultas(estado)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold capitalize transition ${
+                        filtroConsultas === estado
+                          ? 'bg-white text-usm-blue shadow-sm'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      {estado === 'todas' ? 'Todas' : `${estado}s`}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {cargandoConsultas ? (
+                <div className="bg-white p-8 rounded-2xl border border-slate-200 text-center text-xs text-slate-500">
+                  Cargando consultas...
+                </div>
+              ) : (
+                (() => {
+                  const visibles =
+                    filtroConsultas === 'todas'
+                      ? consultas
+                      : consultas.filter((c) => c.estado === filtroConsultas);
+
+                  if (visibles.length === 0) {
+                    return (
+                      <div className="bg-white p-8 rounded-2xl border border-slate-200 text-center space-y-1.5">
+                        <MessageSquareMore className="w-8 h-8 text-slate-300 mx-auto" />
+                        <p className="text-sm font-semibold text-slate-700">
+                          No hay consultas en esta categoría
+                        </p>
+                        <p className="text-xs text-slate-500">
+                          Cuando un alumno escale una duda desde el chat, aparecerá aquí.
+                        </p>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="space-y-3">
+                      {visibles.map((consulta) => {
+                        const borrador = borradoresRespuesta[consulta.id] || {
+                          texto: consulta.respuesta_profesor || '',
+                          guardarEnJeff: true,
+                          palabrasClave: (consulta.palabras_clave_sugeridas || []).join(', '),
+                          categoria: 'Consultas Resueltas',
+                        };
+                        const ocupada = procesandoConsultaId === consulta.id;
+
+                        return (
+                          <div
+                            key={consulta.id}
+                            className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-3"
+                          >
+                            <div className="flex flex-wrap items-start justify-between gap-2">
+                              <div className="space-y-1">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span
+                                    className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full ${
+                                      consulta.estado === 'pendiente'
+                                        ? 'bg-amber-100 text-amber-800'
+                                        : consulta.estado === 'resuelta'
+                                        ? 'bg-emerald-100 text-emerald-800'
+                                        : 'bg-slate-200 text-slate-600'
+                                    }`}
+                                  >
+                                    {consulta.estado}
+                                  </span>
+                                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
+                                    {consulta.motivo === 'fuera_de_foco'
+                                      ? 'Fuera de foco'
+                                      : 'Sin respaldo RAG'}
+                                  </span>
+                                  {consulta.guardada_en_jeff && (
+                                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-usm-blue border border-blue-200">
+                                      Guardada en Jeff ($0 GPU)
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-sm font-semibold text-slate-800">
+                                  “{consulta.pregunta}”
+                                </p>
+                              </div>
+                              <span className="text-[11px] text-slate-400">
+                                {consulta.fecha_creacion.replace('T', ' ')}
+                              </span>
+                            </div>
+
+                            {consulta.estado === 'pendiente' ? (
+                              <div className="space-y-3 pt-2 border-t border-slate-100">
+                                <div>
+                                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                                    Respuesta del docente
+                                  </label>
+                                  <textarea
+                                    rows={3}
+                                    value={borrador.texto}
+                                    onChange={(e) =>
+                                      actualizarBorrador(consulta.id, { texto: e.target.value })
+                                    }
+                                    placeholder="Escribe una respuesta clara (si activas Jeff, esta respuesta se entregará automáticamente a futuros alumnos)..."
+                                    className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-usm-blue"
+                                  />
+                                </div>
+
+                                <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={borrador.guardarEnJeff}
+                                    onChange={(e) =>
+                                      actualizarBorrador(consulta.id, {
+                                        guardarEnJeff: e.target.checked,
+                                      })
+                                    }
+                                    className="rounded border-slate-300 text-usm-blue focus:ring-usm-blue"
+                                  />
+                                  <span className="font-medium">
+                                    Guardar como FAQ de Jeff para responder futuras dudas iguales a $0 GPU
+                                  </span>
+                                </label>
+
+                                {borrador.guardarEnJeff && (
+                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 bg-slate-50 p-3 rounded-xl border border-slate-200">
+                                    <div>
+                                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                                        Palabras clave (separadas por coma)
+                                      </label>
+                                      <input
+                                        type="text"
+                                        value={borrador.palabrasClave}
+                                        onChange={(e) =>
+                                          actualizarBorrador(consulta.id, {
+                                            palabrasClave: e.target.value,
+                                          })
+                                        }
+                                        placeholder="ej: efecto tunel, cuantico, schrodinger"
+                                        className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-usm-blue"
+                                      />
+                                    </div>
+                                    <div>
+                                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                                        Categoría en Jeff
+                                      </label>
+                                      <input
+                                        type="text"
+                                        value={borrador.categoria}
+                                        onChange={(e) =>
+                                          actualizarBorrador(consulta.id, {
+                                            categoria: e.target.value,
+                                          })
+                                        }
+                                        className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-usm-blue"
+                                      />
+                                    </div>
+                                  </div>
+                                )}
+
+                                <div className="flex flex-wrap items-center justify-end gap-2">
+                                  <button
+                                    type="button"
+                                    disabled={ocupada}
+                                    onClick={() => manejarResponderConsulta(consulta, 'descartada')}
+                                    className="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-100 border border-slate-200 transition disabled:opacity-50"
+                                  >
+                                    Descartar
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={ocupada}
+                                    onClick={() => manejarResponderConsulta(consulta, 'resuelta')}
+                                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-usm-blue hover:bg-usm-dark text-white shadow-sm transition disabled:opacity-50"
+                                  >
+                                    <Send className="w-3.5 h-3.5" />
+                                    {ocupada
+                                      ? 'Guardando...'
+                                      : borrador.guardarEnJeff && borrador.texto.trim()
+                                      ? 'Responder y guardar en Jeff'
+                                      : 'Marcar como resuelta'}
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              consulta.respuesta_profesor && (
+                                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-700">
+                                  <span className="font-semibold text-slate-800 block mb-1">
+                                    Respuesta registrada:
+                                  </span>
+                                  {consulta.respuesta_profesor}
+                                </div>
+                              )
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()
+              )}
             </div>
           )}
 

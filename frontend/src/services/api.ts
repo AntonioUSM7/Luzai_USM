@@ -1,4 +1,10 @@
-import { Ramo, ArchivoRecurso, RespuestaArchivos } from '../types';
+import {
+  Ramo,
+  ArchivoRecurso,
+  RespuestaArchivos,
+  EventoMetadataChat,
+  ConsultaProfesor,
+} from '../types';
 
 export const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
@@ -30,7 +36,8 @@ export async function obtenerRamos(): Promise<Ramo[]> {
 export async function enviarMensajeChat(
   codigoRamo: string,
   mensaje: string,
-  onToken: (token: string) => void
+  onToken: (token: string) => void,
+  onMetadata?: (meta: EventoMetadataChat) => void
 ): Promise<void> {
   const respuesta = await fetch(`${API_URL}/api/chat`, {
     method: 'POST',
@@ -64,6 +71,14 @@ export async function enviarMensajeChat(
           const evento = JSON.parse(jsonStr);
           if (evento.tipo === 'token' && evento.contenido) {
             onToken(evento.contenido);
+          } else if ((evento.tipo === 'inicio' || evento.tipo === 'fin') && onMetadata) {
+            onMetadata({
+              canal: evento.canal,
+              puede_escalar: evento.puede_escalar,
+              motivo: evento.motivo,
+              topico: evento.topico,
+              categoria: evento.categoria,
+            });
           }
         } catch {
           // Ignorar bloques no JSON
@@ -171,4 +186,75 @@ export async function eliminarArchivoRamo(
   if (!respuesta.ok) {
     throw new Error('Error al eliminar el archivo');
   }
+}
+
+/**
+ * Envía una consulta sin respuesta al buzón del profesor del ramo (previa confirmación del alumno).
+ */
+export async function enviarConsultaProfesor(
+  codigoRamo: string,
+  pregunta: string,
+  motivo = 'sin_respaldo_rag'
+): Promise<ConsultaProfesor> {
+  const respuesta = await fetch(`${API_URL}/api/ramos/${codigoRamo}/consultas`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pregunta, motivo }),
+  });
+
+  if (!respuesta.ok) {
+    throw new Error('Error al enviar la consulta al profesor');
+  }
+
+  const datos = await respuesta.json();
+  return datos.consulta;
+}
+
+/**
+ * Lista las consultas escaladas al profesor para un ramo.
+ */
+export async function listarConsultasProfesor(
+  codigoRamo: string,
+  estado?: 'pendiente' | 'resuelta' | 'descartada'
+): Promise<ConsultaProfesor[]> {
+  const query = estado ? `?estado=${encodeURIComponent(estado)}` : '';
+  const respuesta = await fetch(`${API_URL}/api/ramos/${codigoRamo}/consultas${query}`);
+
+  if (!respuesta.ok) {
+    throw new Error('Error al cargar las consultas del profesor');
+  }
+
+  const datos = await respuesta.json();
+  return datos.consultas || [];
+}
+
+/**
+ * Responde o descarta una consulta desde la vista docente y opcionalmente la guarda como FAQ de Jeff.
+ */
+export async function responderConsultaProfesor(
+  codigoRamo: string,
+  consultaId: string,
+  payload: {
+    estado: 'resuelta' | 'descartada';
+    respuesta_profesor?: string;
+    guardar_en_jeff?: boolean;
+    categoria?: string;
+    palabras_clave?: string[];
+  }
+): Promise<{ consulta: ConsultaProfesor; faq_creada?: Record<string, unknown> | null }> {
+  const respuesta = await fetch(
+    `${API_URL}/api/ramos/${codigoRamo}/consultas/${encodeURIComponent(consultaId)}/responder`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }
+  );
+
+  if (!respuesta.ok) {
+    const detalle = await respuesta.json().catch(() => ({}));
+    throw new Error(detalle.detail || 'Error al actualizar la consulta');
+  }
+
+  return respuesta.json();
 }

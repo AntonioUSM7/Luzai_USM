@@ -7,7 +7,7 @@ import shutil
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import AsyncIterator, Dict, Any, List
+from typing import AsyncIterator, Dict, Any, List, Optional
 
 import httpx
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
+import consultas_store
 import rag_engine
 import router_jeff
 import router_modo
@@ -51,6 +52,19 @@ class ConsultaChat(BaseModel):
 
 class CrearCarpetaReq(BaseModel):
     nombre: str
+
+
+class CrearConsultaProfesorReq(BaseModel):
+    pregunta: str
+    motivo: str = "sin_respaldo_rag"
+
+
+class ResponderConsultaProfesorReq(BaseModel):
+    estado: str = "resuelta"
+    respuesta_profesor: Optional[str] = None
+    guardar_en_jeff: bool = False
+    categoria: str = "Consultas Resueltas"
+    palabras_clave: Optional[List[str]] = None
 
 
 def obtener_lista_ramos():
@@ -295,6 +309,62 @@ def obtener_imagen(codigo_ramo: str, ruta: str):
     return FileResponse(destino)
 
 
+@app.get("/api/ramos/{codigo_ramo}/consultas")
+def listar_consultas_profesor(codigo_ramo: str, estado: Optional[str] = None):
+    """Lista las consultas escaladas al profesor para un ramo."""
+    codigo = codigo_ramo.upper()
+    if not (BASE_DATA_DIR / codigo / "config.json").exists():
+        raise HTTPException(status_code=404, detail="Ramo no encontrado")
+    consultas = consultas_store.listar_consultas(codigo, estado=estado)
+    return {
+        "codigo_ramo": codigo,
+        "total": len(consultas),
+        "consultas": consultas,
+    }
+
+
+@app.post("/api/ramos/{codigo_ramo}/consultas")
+def crear_consulta_profesor(codigo_ramo: str, req: CrearConsultaProfesorReq):
+    """Registra una consulta escalada por el estudiante tras confirmación explícita."""
+    try:
+        consulta = consultas_store.crear_consulta(
+            codigo_ramo=codigo_ramo,
+            pregunta=req.pregunta,
+            motivo=req.motivo,
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Ramo no encontrado")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return {"status": "ok", "consulta": consulta}
+
+
+@app.post("/api/ramos/{codigo_ramo}/consultas/{consulta_id}/responder")
+def responder_consulta_profesor(
+    codigo_ramo: str, consulta_id: str, req: ResponderConsultaProfesorReq
+):
+    """Permite al profesor responder o descartar una consulta y opcionalmente guardarla en Jeff."""
+    try:
+        resultado = consultas_store.responder_consulta(
+            codigo_ramo=codigo_ramo,
+            consulta_id=consulta_id,
+            estado=req.estado,
+            respuesta_profesor=req.respuesta_profesor,
+            guardar_en_jeff=req.guardar_en_jeff,
+            categoria=req.categoria,
+            palabras_clave=req.palabras_clave,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Ramo no encontrado")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return {"status": "ok", **resultado}
+
+
 def _sse(evento: Dict[str, Any]) -> str:
     return f"data: {json.dumps(evento, ensure_ascii=False)}\n\n"
 
@@ -306,12 +376,16 @@ def _fragmentos_token(texto: str):
 
 
 async def _respuesta_fija(
-    texto: str, modo: str, con_contexto: bool, **extra: Any
+    texto: str,
+    modo: str,
+    con_contexto: bool,
+    canal: str = "TUTOR_SOCRATICO",
+    **extra: Any,
 ) -> AsyncIterator[str]:
     """Emite una respuesta determinista por SSE, sin llamar al LLM."""
     yield _sse({
         "tipo": "inicio",
-        "canal": "TUTOR_SOCRATICO",
+        "canal": canal,
         "modo": modo,
         "con_contexto": con_contexto,
         **extra,
@@ -319,7 +393,33 @@ async def _respuesta_fija(
     for fragmento in _fragmentos_token(texto):
         yield _sse({"tipo": "token", "contenido": fragmento})
         await asyncio.sleep(0.02)
-    yield _sse({"tipo": "fin", "canal": "TUTOR_SOCRATICO"})
+    yield _sse({"tipo": "fin", "canal": canal, **extra})
+
+
+def _obtener_config_fallback(datos_ramo: Dict[str, Any], codigo: str) -> Dict[str, Any]:
+    """Obtiene la configuración de fallback estricto del ramo con valores por defecto seguros."""
+    cfg = datos_ramo.get("config_fallback") or {}
+    return {
+        "habilitado": bool(cfg.get("habilitado", True)),
+        "permitir_escalar_profesor": bool(cfg.get("permitir_escalar_profesor", True)),
+        "mensaje_sin_respaldo": cfg.get(
+            "mensaje_sin_respaldo",
+            (
+                f"No encontré respaldo suficiente en los apuntes oficiales ni en la información "
+                f"administrativa de {codigo} para responder con certeza. Si quieres, puedes enviar "
+                f"esta pregunta al profesor para que la revise."
+            ),
+        ),
+        "mensaje_fuera_de_foco": cfg.get(
+            "mensaje_fuera_de_foco",
+            (
+                f"Esa consulta parece estar fuera del foco del ramo {codigo}. "
+                "Este tutor responde únicamente con base en los contenidos oficiales del curso. "
+                "Si crees que sí está relacionada con la asignatura, puedes enviarla al profesor."
+            ),
+        ),
+        "canal_alternativo": cfg.get("canal_alternativo", ""),
+    }
 
 
 def _pista_calculo(mensaje: str) -> str:
@@ -663,14 +763,36 @@ async def chat(consulta: ConsultaChat):
             media_type="text/event-stream",
         )
 
-    # 2c. Guard de alcance: evita que el tutor responda trivia fuera del ramo.
+    # 2c. Guard de fallback estricto ($0 GPU): evita llamar al LLM fuera de foco o sin respaldo RAG.
+    cfg_fallback = _obtener_config_fallback(datos_ramo, codigo)
     temario = _obtener_temario(codigo)
+    es_saludo = router_modo.es_saludo(consulta.mensaje)
     fuera_de_foco = (
-        not router_modo.es_saludo(consulta.mensaje)
+        not es_saludo
         and not router_modo.menciona_tema_del_ramo(consulta.mensaje, temario)
         and max_score < RAG_OFFTOPIC_SCORE
     )
     if fuera_de_foco:
+        if cfg_fallback["habilitado"]:
+            texto_fuera = cfg_fallback["mensaje_fuera_de_foco"]
+            logger.info(
+                "Chat %s FALLBACK_DOCENTE fuera de foco (modo=%s score=%.3f)",
+                codigo,
+                modo,
+                max_score,
+            )
+            return StreamingResponse(
+                _respuesta_fija(
+                    texto_fuera,
+                    modo,
+                    bool(contexto),
+                    canal="FALLBACK_DOCENTE",
+                    puede_escalar=cfg_fallback["permitir_escalar_profesor"],
+                    motivo="fuera_de_foco",
+                    fuera_de_foco=True,
+                ),
+                media_type="text/event-stream",
+            )
         texto_fuera = (
             f"Esa consulta parece estar fuera del foco del ramo {codigo}. "
             "Este tutor está para ayudarte con los contenidos del curso. "
@@ -681,6 +803,32 @@ async def chat(consulta: ConsultaChat):
         )
         return StreamingResponse(
             _respuesta_fija(texto_fuera, modo, bool(contexto), fuera_de_foco=True),
+            media_type="text/event-stream",
+        )
+
+    sin_respaldo_rag = (
+        cfg_fallback["habilitado"]
+        and not es_saludo
+        and not es_resumen
+        and not bool(contexto)
+    )
+    if sin_respaldo_rag:
+        texto_sin_respaldo = cfg_fallback["mensaje_sin_respaldo"]
+        logger.info(
+            "Chat %s FALLBACK_DOCENTE sin respaldo RAG (modo=%s score=%.3f)",
+            codigo,
+            modo,
+            max_score,
+        )
+        return StreamingResponse(
+            _respuesta_fija(
+                texto_sin_respaldo,
+                modo,
+                False,
+                canal="FALLBACK_DOCENTE",
+                puede_escalar=cfg_fallback["permitir_escalar_profesor"],
+                motivo="sin_respaldo_rag",
+            ),
             media_type="text/event-stream",
         )
 

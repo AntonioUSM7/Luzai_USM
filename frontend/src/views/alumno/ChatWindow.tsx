@@ -1,11 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send } from 'lucide-react';
+import { Send, HelpCircle, CheckCircle2 } from 'lucide-react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import { Ramo, MensajeChat } from '../../types';
-import { enviarMensajeChat, resolverUrlApi } from '../../services/api';
+import { enviarMensajeChat, enviarConsultaProfesor, resolverUrlApi } from '../../services/api';
 
 const componentesMarkdown: Components = {
   img({ node: _node, src, alt, ...props }) {
@@ -75,11 +75,31 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ ramo }) => {
     setCargando(true);
 
     try {
-      await enviarMensajeChat(ramo.codigo, texto, (token) => {
-        setMensajes((prev) =>
-          prev.map((m) => (m.id === idAsistente ? { ...m, texto: m.texto + token } : m))
-        );
-      });
+      await enviarMensajeChat(
+        ramo.codigo,
+        texto,
+        (token) => {
+          setMensajes((prev) =>
+            prev.map((m) => (m.id === idAsistente ? { ...m, texto: m.texto + token } : m))
+          );
+        },
+        (meta) => {
+          setMensajes((prev) =>
+            prev.map((m) =>
+              m.id === idAsistente
+                ? {
+                    ...m,
+                    canal: meta.canal ?? m.canal,
+                    puedeEscalar: meta.puede_escalar ?? m.puedeEscalar,
+                    motivoFallback: meta.motivo ?? m.motivoFallback,
+                    preguntaOriginal: texto,
+                    estadoEscalamiento: m.estadoEscalamiento ?? 'idle',
+                  }
+                : m
+            )
+          );
+        }
+      );
     } catch {
       setMensajes((prev) =>
         prev.map((m) =>
@@ -90,6 +110,31 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ ramo }) => {
       );
     } finally {
       setCargando(false);
+    }
+  };
+
+  const manejarEscalarProfesor = async (msg: MensajeChat) => {
+    if (!msg.preguntaOriginal || msg.estadoEscalamiento === 'enviando' || msg.estadoEscalamiento === 'enviada') {
+      return;
+    }
+
+    setMensajes((prev) =>
+      prev.map((m) => (m.id === msg.id ? { ...m, estadoEscalamiento: 'enviando' } : m))
+    );
+
+    try {
+      await enviarConsultaProfesor(
+        ramo.codigo,
+        msg.preguntaOriginal,
+        msg.motivoFallback || 'sin_respaldo_rag'
+      );
+      setMensajes((prev) =>
+        prev.map((m) => (m.id === msg.id ? { ...m, estadoEscalamiento: 'enviada' } : m))
+      );
+    } catch {
+      setMensajes((prev) =>
+        prev.map((m) => (m.id === msg.id ? { ...m, estadoEscalamiento: 'error' } : m))
+      );
     }
   };
 
@@ -135,6 +180,37 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ ramo }) => {
                   </ReactMarkdown>
                 </div>
               )}
+              {msg.autor === 'asistente' &&
+                msg.canal === 'FALLBACK_DOCENTE' &&
+                msg.puedeEscalar && (
+                  <div className="mt-3 pt-2.5 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2">
+                    {msg.estadoEscalamiento === 'enviada' ? (
+                      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-lg">
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        Consulta enviada al profesor de {ramo.codigo}
+                      </span>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => manejarEscalarProfesor(msg)}
+                          disabled={msg.estadoEscalamiento === 'enviando'}
+                          className="inline-flex items-center gap-1.5 text-xs font-medium bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 px-3 py-1.5 rounded-lg transition disabled:opacity-50"
+                        >
+                          <HelpCircle className="w-3.5 h-3.5" />
+                          {msg.estadoEscalamiento === 'enviando'
+                            ? 'Enviando al profesor...'
+                            : 'Enviar esta pregunta al profesor'}
+                        </button>
+                        {msg.estadoEscalamiento === 'error' && (
+                          <span className="text-[11px] text-red-600">
+                            No se pudo enviar. Intenta nuevamente.
+                          </span>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
               <span
                 className={`text-[10px] mt-1.5 block text-right ${
                   msg.autor === 'usuario' ? 'text-blue-100' : 'text-slate-400'
