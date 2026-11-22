@@ -1,11 +1,16 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send } from 'lucide-react';
+import { Send, HelpCircle, CheckCircle2, Sparkles } from 'lucide-react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import { Ramo, MensajeChat } from '../../types';
-import { enviarMensajeChat, resolverUrlApi } from '../../services/api';
+import {
+  enviarMensajeChat,
+  enviarConsultaProfesor,
+  resolverUrlApi,
+  type MensajeHistorialApi,
+} from '../../services/api';
 
 const componentesMarkdown: Components = {
   img({ node: _node, src, alt, ...props }) {
@@ -36,11 +41,38 @@ interface ChatWindowProps {
   ramo: Ramo;
 }
 
+/**
+ * Extrae las últimas preguntas guía (¿...?) de la respuesta del tutor socrático
+ * para ofrecerlas como botones clicables sin consumir GPU adicional.
+ */
+function extraerPreguntasSugeridas(texto: string): string[] {
+  const bloques = texto
+    .split(/\n+/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && !l.startsWith('#'));
+
+  if (bloques.length === 0) return [];
+
+  // Analiza los últimos bloques (donde el tutor deja las preguntas guía)
+  const cola = bloques.slice(-3).join(' ');
+  const matches = cola.match(/¿[^¿?\n]{8,220}\?/g) || [];
+
+  const unicas: string[] = [];
+  for (const m of matches) {
+    const limpia = m.replace(/\*\*/g, '').replace(/\s+/g, ' ').trim();
+    if (limpia && !unicas.includes(limpia)) {
+      unicas.push(limpia);
+    }
+  }
+  return unicas.slice(-3);
+}
+
 export const ChatWindow: React.FC<ChatWindowProps> = ({ ramo }) => {
   const [mensajes, setMensajes] = useState<MensajeChat[]>([]);
   const [entrada, setEntrada] = useState('');
   const [cargando, setCargando] = useState(false);
   const finChatRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setMensajes([
@@ -62,6 +94,19 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ ramo }) => {
     if (!entrada.trim() || cargando) return;
 
     const texto = entrada.trim();
+    const historial: MensajeHistorialApi[] = mensajes
+      .filter(
+        (m) =>
+          !m.id.startsWith('bienvenida-') &&
+          m.texto.trim().length > 0 &&
+          !m.texto.startsWith('⚠️ Error al comunicarse')
+      )
+      .slice(-6)
+      .map((m) => ({
+        rol: m.autor === 'usuario' ? 'user' : 'assistant',
+        contenido: m.texto,
+      }));
+
     const idUsuario = `user-${Date.now()}`;
     const idAsistente = `bot-${Date.now() + 1}`;
     const hora = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -75,11 +120,32 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ ramo }) => {
     setCargando(true);
 
     try {
-      await enviarMensajeChat(ramo.codigo, texto, (token) => {
-        setMensajes((prev) =>
-          prev.map((m) => (m.id === idAsistente ? { ...m, texto: m.texto + token } : m))
-        );
-      });
+      await enviarMensajeChat(
+        ramo.codigo,
+        texto,
+        (token) => {
+          setMensajes((prev) =>
+            prev.map((m) => (m.id === idAsistente ? { ...m, texto: m.texto + token } : m))
+          );
+        },
+        (meta) => {
+          setMensajes((prev) =>
+            prev.map((m) =>
+              m.id === idAsistente
+                ? {
+                    ...m,
+                    canal: meta.canal ?? m.canal,
+                    puedeEscalar: meta.puede_escalar ?? m.puedeEscalar,
+                    motivoFallback: meta.motivo ?? m.motivoFallback,
+                    preguntaOriginal: texto,
+                    estadoEscalamiento: m.estadoEscalamiento ?? 'idle',
+                  }
+                : m
+            )
+          );
+        },
+        historial
+      );
     } catch {
       setMensajes((prev) =>
         prev.map((m) =>
@@ -91,6 +157,36 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ ramo }) => {
     } finally {
       setCargando(false);
     }
+  };
+
+  const manejarEscalarProfesor = async (msg: MensajeChat) => {
+    if (!msg.preguntaOriginal || msg.estadoEscalamiento === 'enviando' || msg.estadoEscalamiento === 'enviada') {
+      return;
+    }
+
+    setMensajes((prev) =>
+      prev.map((m) => (m.id === msg.id ? { ...m, estadoEscalamiento: 'enviando' } : m))
+    );
+
+    try {
+      await enviarConsultaProfesor(
+        ramo.codigo,
+        msg.preguntaOriginal,
+        msg.motivoFallback || 'sin_respaldo_rag'
+      );
+      setMensajes((prev) =>
+        prev.map((m) => (m.id === msg.id ? { ...m, estadoEscalamiento: 'enviada' } : m))
+      );
+    } catch {
+      setMensajes((prev) =>
+        prev.map((m) => (m.id === msg.id ? { ...m, estadoEscalamiento: 'error' } : m))
+      );
+    }
+  };
+
+  const manejarUsarSugerencia = (pregunta: string) => {
+    setEntrada(pregunta);
+    inputRef.current?.focus();
   };
 
   return (
@@ -110,47 +206,111 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ ramo }) => {
 
       {/* Lista de mensajes */}
       <div className="flex-1 overflow-y-auto p-6 space-y-4">
-        {mensajes.map((msg) => (
-          <div
-            key={msg.id}
-            className={`flex ${msg.autor === 'usuario' ? 'justify-end' : 'justify-start'}`}
-          >
+        {mensajes.map((msg, idx) => {
+          const esUltimo = idx === mensajes.length - 1;
+          const sugerencias =
+            msg.autor === 'asistente' &&
+            msg.canal === 'TUTOR_SOCRATICO' &&
+            !(cargando && esUltimo)
+              ? extraerPreguntasSugeridas(msg.texto)
+              : [];
+
+          return (
             <div
-              className={`max-w-xl rounded-2xl px-4 py-3 text-sm leading-relaxed ${
-                msg.autor === 'usuario'
-                  ? 'bg-usm-blue text-white rounded-br-none shadow'
-                  : 'bg-white border border-slate-200 text-slate-800 rounded-bl-none shadow-sm'
-              }`}
+              key={msg.id}
+              className={`flex ${msg.autor === 'usuario' ? 'justify-end' : 'justify-start'}`}
             >
-              {msg.autor === 'usuario' ? (
-                <p className="whitespace-pre-wrap">{msg.texto}</p>
-              ) : (
-                <div className="markdown-content">
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm, remarkMath]}
-                    rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
-                    components={componentesMarkdown}
-                  >
-                    {msg.texto}
-                  </ReactMarkdown>
-                </div>
-              )}
-              <span
-                className={`text-[10px] mt-1.5 block text-right ${
-                  msg.autor === 'usuario' ? 'text-blue-100' : 'text-slate-400'
+              <div
+                className={`max-w-xl rounded-2xl px-4 py-3 text-sm leading-relaxed ${
+                  msg.autor === 'usuario'
+                    ? 'bg-usm-blue text-white rounded-br-none shadow'
+                    : 'bg-white border border-slate-200 text-slate-800 rounded-bl-none shadow-sm'
                 }`}
               >
-                {msg.hora}
-              </span>
+                {msg.autor === 'usuario' ? (
+                  <p className="whitespace-pre-wrap">{msg.texto}</p>
+                ) : (
+                  <div className="markdown-content">
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm, remarkMath]}
+                      rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
+                      components={componentesMarkdown}
+                    >
+                      {msg.texto}
+                    </ReactMarkdown>
+                  </div>
+                )}
+                {sugerencias.length > 0 && (
+                  <div className="mt-3 pt-2.5 border-t border-slate-100 space-y-1.5">
+                    <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500">
+                      <Sparkles className="w-3 h-3 text-usm-blue" />
+                      Preguntas sugeridas para seguir:
+                    </span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {sugerencias.map((preg, pIdx) => (
+                        <button
+                          key={pIdx}
+                          type="button"
+                          onClick={() => manejarUsarSugerencia(preg)}
+                          disabled={cargando}
+                          title="Usar esta pregunta en el chat"
+                          className="text-left text-xs bg-blue-50/70 hover:bg-blue-100 text-usm-blue border border-blue-200 px-2.5 py-1.5 rounded-xl transition disabled:opacity-50"
+                        >
+                          {preg}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {msg.autor === 'asistente' &&
+                  msg.canal === 'FALLBACK_DOCENTE' &&
+                  msg.puedeEscalar && (
+                    <div className="mt-3 pt-2.5 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2">
+                      {msg.estadoEscalamiento === 'enviada' ? (
+                        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-lg">
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          Consulta enviada al profesor de {ramo.codigo}
+                        </span>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => manejarEscalarProfesor(msg)}
+                            disabled={msg.estadoEscalamiento === 'enviando'}
+                            className="inline-flex items-center gap-1.5 text-xs font-medium bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 px-3 py-1.5 rounded-lg transition disabled:opacity-50"
+                          >
+                            <HelpCircle className="w-3.5 h-3.5" />
+                            {msg.estadoEscalamiento === 'enviando'
+                              ? 'Enviando al profesor...'
+                              : 'Enviar esta pregunta al profesor'}
+                          </button>
+                          {msg.estadoEscalamiento === 'error' && (
+                            <span className="text-[11px] text-red-600">
+                              No se pudo enviar. Intenta nuevamente.
+                            </span>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  )}
+                <span
+                  className={`text-[10px] mt-1.5 block text-right ${
+                    msg.autor === 'usuario' ? 'text-blue-100' : 'text-slate-400'
+                  }`}
+                >
+                  {msg.hora}
+                </span>
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
         <div ref={finChatRef} />
       </div>
 
       {/* Input de consulta */}
       <form onSubmit={manejarEnvio} className="p-4 bg-white border-t border-slate-200 flex items-center gap-2">
         <input
+          ref={inputRef}
           type="text"
           value={entrada}
           onChange={(e) => setEntrada(e.target.value)}

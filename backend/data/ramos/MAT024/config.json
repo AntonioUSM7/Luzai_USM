@@ -10,6 +10,17 @@
     "Formulario_Oficial_Laplace_Fourier.pdf"
   ],
   "reglas_socraticas": "Guía paso a paso el planteamiento de integrales de línea, teorema de Green/Stokes y separación de variables en EDPs. Jamás resuelvas la integral completa ni entregues el resultado numérico final.",
+  "config_socratica": {
+    "estilo": "equilibrado",
+    "extension": "media"
+  },
+  "config_fallback": {
+    "habilitado": true,
+    "permitir_escalar_profesor": true,
+    "mensaje_sin_respaldo": "No encontré respaldo suficiente en los apuntes oficiales ni en la información administrativa de MAT024 para responder con certeza. Si quieres, puedes enviar esta pregunta al profesor para que la revise.",
+    "mensaje_fuera_de_foco": "Esa consulta parece estar fuera del foco de MAT024. Este tutor responde únicamente con base en los contenidos oficiales del curso. Si crees que sí está relacionada con la asignatura, puedes enviarla al profesor.",
+    "canal_alternativo": "Foro de consultas en AULA USM"
+  },
   "tareas": [
     {
       "id": "mat_tarea_1",

@@ -1,0 +1,17 @@
+[
+  {
+    "id": "cons_f2b721fa32",
+    "codigo_ramo": "TEL20425",
+    "pregunta": "Que son las redes",
+    "motivo": "fuera_de_foco",
+    "estado": "pendiente",
+    "fecha_creacion": "2026-11-20T20:17:16",
+    "fecha_respuesta": null,
+    "respuesta_profesor": null,
+    "guardada_en_jeff": false,
+    "faq_jeff_id": null,
+    "palabras_clave_sugeridas": [
+      "redes"
+    ]
+  }
+]
