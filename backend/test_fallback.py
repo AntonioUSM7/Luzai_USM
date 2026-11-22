@@ -178,6 +178,7 @@ class TestBuzonDocenteYConversionJeff(unittest.TestCase):
         self.assertEqual(data_resp["consulta"]["estado"], "resuelta")
         self.assertTrue(data_resp["consulta"]["guardada_en_jeff"])
         self.assertIsNotNone(data_resp["faq_creada"])
+        self.assertEqual(data_resp["faq_creada"]["pregunta"], pregunta)
 
         # 4. Verificar que config.json conserva metadatos previos + nueva FAQ
         with open(self.data_dir / "TEST101" / "config.json", "r", encoding="utf-8") as f:
@@ -217,6 +218,124 @@ class TestBuzonDocenteYConversionJeff(unittest.TestCase):
         with open(self.data_dir / "TEST101" / "config.json", "r", encoding="utf-8") as f:
             cfg_actual = json.load(f)
         self.assertEqual(len(cfg_actual["faqs_jeff"]), 1)
+
+    def test_crud_api_faqs_jeff_y_flujo_dual_chat(self):
+        # 1. Listar inicial
+        resp_list = self.client.get("/api/ramos/TEST101/faqs_jeff")
+        self.assertEqual(resp_list.status_code, 200)
+        self.assertEqual(resp_list.json()["total"], 1)
+
+        # 2. Crear FAQ con fallo tolerado en RAG
+        with patch.object(
+            backend_app.rag_engine,
+            "indexar_faq_jeff",
+            side_effect=RuntimeError("Ollama offline"),
+        ):
+            resp_create = self.client.post(
+                "/api/ramos/TEST101/faqs_jeff",
+                json={
+                    "pregunta": "¿Cuándo vence el informe de laboratorio?",
+                    "respuesta": "El informe de laboratorio vence el viernes 23:59 en AULA.",
+                    "palabras_clave": ["informe laboratorio"],
+                    "categoria": "Fechas y Entregas",
+                },
+            )
+        self.assertEqual(resp_create.status_code, 200)
+        data_create = resp_create.json()
+        self.assertFalse(data_create["rag_sincronizado"])
+        faq_id = data_create["faq"]["id"]
+        self.assertEqual(
+            data_create["faq"]["pregunta"], "¿Cuándo vence el informe de laboratorio?"
+        )
+
+        # 3. Editar FAQ con RAG disponible
+        with patch.object(
+            backend_app.rag_engine,
+            "indexar_faq_jeff",
+            return_value={"status": "ok", "faq_id": faq_id, "chunks_indexados": 1},
+        ) as mock_indexar:
+            resp_update = self.client.put(
+                f"/api/ramos/TEST101/faqs_jeff/{faq_id}",
+                json={
+                    "pregunta": "¿Cuál es el plazo del informe de laboratorio?",
+                    "respuesta": "El plazo actualizado es el lunes 18:00 en AULA.",
+                    "palabras_clave": ["informe laboratorio"],
+                    "categoria": "Fechas y Entregas",
+                },
+            )
+        self.assertEqual(resp_update.status_code, 200)
+        self.assertTrue(resp_update.json()["rag_sincronizado"])
+        mock_indexar.assert_called_once()
+
+        # Editar inexistente -> 404
+        resp_404 = self.client.put(
+            "/api/ramos/TEST101/faqs_jeff/inexistente",
+            json={"respuesta": "x", "palabras_clave": ["clave"]},
+        )
+        self.assertEqual(resp_404.status_code, 404)
+
+        # 4a. Flujo /api/chat nivel 1: keyword exacta -> Jeff ($0 GPU)
+        resp_jeff = self.client.post(
+            "/api/chat",
+            json={
+                "codigo_ramo": "TEST101",
+                "mensaje": "¿Fecha del informe laboratorio?",
+            },
+        )
+        self.assertEqual(resp_jeff.status_code, 200)
+        eventos_jeff = _parsear_sse(resp_jeff.text)
+        self.assertEqual(eventos_jeff[-1]["canal"], "JEFF_ADMIN")
+
+        # 4b. Flujo /api/chat nivel 2: parafraseo sin keyword -> RAG devuelve FAQ -> Tutor Socrático
+        prompts_capturados = []
+
+        async def _fake_ollama(system_prompt, mensaje, historial):
+            prompts_capturados.append(system_prompt)
+            yield {"tipo": "token", "contenido": "Según el docente, el plazo es el lunes 18:00."}
+
+        fragmento_faq = [
+            {
+                "texto": "Pregunta: ¿Cuál es el plazo del informe de laboratorio?\nRespuesta oficial: El plazo actualizado es el lunes 18:00 en AULA.",
+                "archivo": "Preguntas Guardadas (Jeff)",
+                "carpeta": "faqs_jeff",
+                "pagina": None,
+                "distancia": 0.1,
+                "score": 0.9,
+            }
+        ]
+        with (
+            patch.object(
+                backend_app.rag_engine,
+                "buscar_fragmentos_relevantes",
+                return_value=fragmento_faq,
+            ),
+            patch.object(backend_app, "_eventos_ollama", side_effect=_fake_ollama),
+        ):
+            resp_tutor = self.client.post(
+                "/api/chat",
+                json={
+                    "codigo_ramo": "TEST101",
+                    "mensaje": "¿Hasta qué día tengo para subir mi reporte práctico?",
+                },
+            )
+        self.assertEqual(resp_tutor.status_code, 200)
+        eventos_tutor = _parsear_sse(resp_tutor.text)
+        self.assertEqual(eventos_tutor[-1]["canal"], "TUTOR_SOCRATICO")
+        self.assertEqual(len(prompts_capturados), 1)
+        self.assertIn("Preguntas Guardadas (Jeff)", prompts_capturados[0])
+        self.assertIn("lunes 18:00", prompts_capturados[0])
+
+        # 5. Eliminar FAQ y verificar 404 al reintentar
+        with patch.object(
+            backend_app.rag_engine, "eliminar_faq_vectorial", return_value=None
+        ) as mock_del:
+            resp_del = self.client.delete(f"/api/ramos/TEST101/faqs_jeff/{faq_id}")
+        self.assertEqual(resp_del.status_code, 200)
+        self.assertTrue(resp_del.json()["rag_sincronizado"])
+        mock_del.assert_called_once_with("TEST101", faq_id)
+
+        resp_del_404 = self.client.delete(f"/api/ramos/TEST101/faqs_jeff/{faq_id}")
+        self.assertEqual(resp_del_404.status_code, 404)
 
 
 if __name__ == "__main__":

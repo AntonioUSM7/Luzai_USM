@@ -37,6 +37,14 @@ export interface MensajeChat {
   estadoEscalamiento?: 'idle' | 'enviando' | 'enviada' | 'error';
 }
 
+export interface FaqJeff {
+  id: string;
+  categoria: string;
+  pregunta?: string;
+  palabras_clave: string[];
+  respuesta: string;
+}
+
 export interface ConsultaProfesor {
   id: string;
   codigo_ramo: string;

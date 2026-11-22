@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import re
@@ -499,16 +500,121 @@ def buscar_contexto_relevante(
     return formatear_contexto(fragmentos)
 
 
+CARPETA_FAQS_JEFF = "faqs_jeff"
+FUENTE_FAQS_JEFF = "Preguntas Guardadas (Jeff)"
+
+
+def _construir_texto_faq(faq: Dict[str, Any]) -> str:
+    """Construye el texto indexable de una pregunta guardada de Jeff."""
+    lineas: List[str] = []
+    pregunta = str(faq.get("pregunta") or "").strip()
+    categoria = str(faq.get("categoria") or "").strip()
+    palabras_clave = [
+        str(p).strip() for p in (faq.get("palabras_clave") or []) if str(p).strip()
+    ]
+    respuesta = str(faq.get("respuesta") or "").strip()
+
+    if pregunta:
+        lineas.append(f"Pregunta: {pregunta}")
+    elif palabras_clave:
+        lineas.append(f"Palabras clave: {', '.join(palabras_clave)}")
+
+    if categoria:
+        lineas.append(f"Categoría: {categoria}")
+
+    if respuesta:
+        lineas.append(f"Respuesta oficial: {respuesta}")
+
+    return "\n".join(lineas).strip()
+
+
+def indexar_faq_jeff(codigo_ramo: str, faq: Dict[str, Any]) -> Dict[str, Any]:
+    """Indexa o actualiza una pregunta guardada de Jeff en ChromaDB."""
+    codigo = codigo_ramo.upper()
+    faq_id = str(faq.get("id") or "").strip()
+    if not faq_id:
+        raise ValueError("La FAQ debe tener un identificador 'id'")
+
+    texto = _construir_texto_faq(faq)
+    if not texto:
+        raise ValueError("La FAQ no tiene contenido indexable")
+
+    vector = generar_embedding_ollama(_texto_para_documento(texto))
+    metadata = {
+        "ramo": codigo,
+        "carpeta": CARPETA_FAQS_JEFF,
+        "archivo": FUENTE_FAQS_JEFF,
+        "faq_id": faq_id,
+        "categoria": str(faq.get("categoria") or "General"),
+    }
+
+    with _lock_escritura:
+        coleccion = obtener_cliente_chroma(codigo)
+        coleccion.upsert(
+            ids=[f"faq_{faq_id}"],
+            embeddings=[vector],
+            documents=[texto],
+            metadatas=[metadata],
+        )
+
+    return {"status": "ok", "faq_id": faq_id, "chunks_indexados": 1}
+
+
+def eliminar_faq_vectorial(codigo_ramo: str, faq_id: str) -> None:
+    """Elimina el vector asociado a una pregunta guardada de Jeff en ChromaDB."""
+    codigo = codigo_ramo.upper()
+    limpio = str(faq_id or "").strip()
+    if not limpio:
+        return
+
+    with _lock_escritura:
+        coleccion = obtener_cliente_chroma(codigo)
+        try:
+            coleccion.delete(ids=[f"faq_{limpio}"])
+        except Exception as exc:
+            logger.warning("No se pudo eliminar FAQ vectorial %s en %s: %s", limpio, codigo, exc)
+
+
+def sincronizar_faqs_jeff(codigo_ramo: str) -> Dict[str, Any]:
+    """Indexa todas las faqs_jeff declaradas en config.json del ramo."""
+    codigo = codigo_ramo.upper()
+    ruta_config = DATA_DIR / codigo / "config.json"
+    if not ruta_config.exists():
+        return {"faqs_indexadas": 0, "errores": []}
+
+    with open(ruta_config, "r", encoding="utf-8") as archivo:
+        config = json.load(archivo)
+
+    faqs = config.get("faqs_jeff", [])
+    if not isinstance(faqs, list):
+        return {"faqs_indexadas": 0, "errores": []}
+
+    indexadas = 0
+    errores: List[str] = []
+    for faq in faqs:
+        if not isinstance(faq, dict):
+            continue
+        try:
+            indexar_faq_jeff(codigo, faq)
+            indexadas += 1
+        except Exception as exc:
+            logger.warning("Error indexando FAQ %s en %s: %s", faq.get("id"), codigo, exc)
+            errores.append(f"faq:{faq.get('id')}: {exc}")
+
+    return {"faqs_indexadas": indexadas, "errores": errores}
+
+
 def reindexar_ramo(codigo_ramo: str) -> Dict[str, Any]:
     with _lock_escritura:
         return _reindexar_ramo(codigo_ramo)
 
 
 def _reindexar_ramo(codigo_ramo: str) -> Dict[str, Any]:
-    """Reconstruye por completo la base vectorial de un ramo desde sus PDFs."""
+    """Reconstruye por completo la base vectorial de un ramo desde sus PDFs y FAQs de Jeff."""
     codigo = codigo_ramo.upper()
     dir_documentos = DATA_DIR / codigo / "documentos"
-    if not dir_documentos.exists():
+    ruta_config = DATA_DIR / codigo / "config.json"
+    if not dir_documentos.exists() and not ruta_config.exists():
         return {"status": "error", "motivo": f"No existe {dir_documentos}", "chunks_indexados": 0}
 
     eliminar_ramo_vectorial(codigo)
@@ -517,20 +623,27 @@ def _reindexar_ramo(codigo_ramo: str) -> Dict[str, Any]:
     procesados = 0
     errores: List[str] = []
 
-    for archivo in sorted(dir_documentos.rglob("*.pdf")):
-        carpeta = archivo.parent.name if archivo.parent != dir_documentos else "General"
-        try:
-            resultado = indexar_documento(archivo, codigo, carpeta)
-            total_chunks += resultado.get("chunks_indexados", 0)
-            procesados += 1
-        except Exception as exc:
-            logger.error("Error indexando %s: %s", archivo.name, exc)
-            errores.append(f"{archivo.name}: {exc}")
+    if dir_documentos.exists():
+        for archivo in sorted(dir_documentos.rglob("*.pdf")):
+            carpeta = archivo.parent.name if archivo.parent != dir_documentos else "General"
+            try:
+                resultado = indexar_documento(archivo, codigo, carpeta)
+                total_chunks += resultado.get("chunks_indexados", 0)
+                procesados += 1
+            except Exception as exc:
+                logger.error("Error indexando %s: %s", archivo.name, exc)
+                errores.append(f"{archivo.name}: {exc}")
+
+    res_faqs = sincronizar_faqs_jeff(codigo)
+    faqs_indexadas = res_faqs.get("faqs_indexadas", 0)
+    total_chunks += faqs_indexadas
+    errores.extend(res_faqs.get("errores", []))
 
     return {
         "status": "ok",
         "codigo_ramo": codigo,
         "documentos_procesados": procesados,
+        "faqs_indexadas": faqs_indexadas,
         "chunks_indexados": total_chunks,
         "errores": errores,
     }

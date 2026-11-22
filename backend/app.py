@@ -74,6 +74,13 @@ class ResponderConsultaProfesorReq(BaseModel):
     palabras_clave: Optional[List[str]] = None
 
 
+class FaqJeffReq(BaseModel):
+    pregunta: Optional[str] = None
+    respuesta: str
+    palabras_clave: Optional[List[str]] = None
+    categoria: str = "Consultas Resueltas"
+
+
 class ConfigSocraticaReq(BaseModel):
     reglas_socraticas: str = ""
     estilo: Literal["estricto", "equilibrado", "paso_a_paso"] = "equilibrado"
@@ -353,6 +360,36 @@ def crear_consulta_profesor(codigo_ramo: str, req: CrearConsultaProfesorReq):
     return {"status": "ok", "consulta": consulta}
 
 
+def _sincronizar_faq_rag(codigo_ramo: str, faq: Dict[str, Any]) -> bool:
+    """Indexa una FAQ de Jeff en ChromaDB sin bloquear la operación ante fallos de Ollama."""
+    try:
+        rag_engine.indexar_faq_jeff(codigo_ramo, faq)
+        return True
+    except Exception as exc:
+        logger.warning(
+            "No se pudo indexar FAQ '%s' de %s en RAG: %s",
+            faq.get("id"),
+            codigo_ramo,
+            exc,
+        )
+        return False
+
+
+def _eliminar_faq_rag(codigo_ramo: str, faq_id: str) -> bool:
+    """Elimina una FAQ de Jeff en ChromaDB de forma tolerante a fallos."""
+    try:
+        rag_engine.eliminar_faq_vectorial(codigo_ramo, faq_id)
+        return True
+    except Exception as exc:
+        logger.warning(
+            "No se pudo eliminar FAQ '%s' de %s en RAG: %s",
+            faq_id,
+            codigo_ramo,
+            exc,
+        )
+        return False
+
+
 @app.post("/api/ramos/{codigo_ramo}/consultas/{consulta_id}/responder")
 def responder_consulta_profesor(
     codigo_ramo: str, consulta_id: str, req: ResponderConsultaProfesorReq
@@ -375,7 +412,82 @@ def responder_consulta_profesor(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    return {"status": "ok", **resultado}
+    rag_sincronizado = False
+    if resultado.get("faq_creada"):
+        rag_sincronizado = _sincronizar_faq_rag(codigo_ramo, resultado["faq_creada"])
+
+    return {"status": "ok", "rag_sincronizado": rag_sincronizado, **resultado}
+
+
+@app.get("/api/ramos/{codigo_ramo}/faqs_jeff")
+def listar_faqs_jeff_ramo(codigo_ramo: str):
+    """Lista las preguntas guardadas de Jeff para un ramo."""
+    codigo = codigo_ramo.upper()
+    try:
+        faqs = router_jeff.listar_faqs_jeff(codigo)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Ramo no encontrado")
+    return {"codigo_ramo": codigo, "total": len(faqs), "faqs": faqs}
+
+
+@app.post("/api/ramos/{codigo_ramo}/faqs_jeff")
+def crear_faq_jeff_ramo(codigo_ramo: str, req: FaqJeffReq):
+    """Crea una nueva pregunta guardada de Jeff y la sincroniza con RAG."""
+    codigo = codigo_ramo.upper()
+    try:
+        faq = router_jeff.agregar_faq_jeff(
+            codigo_ramo=codigo,
+            respuesta=req.respuesta,
+            palabras_clave=req.palabras_clave,
+            categoria=req.categoria,
+            pregunta=req.pregunta,
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Ramo no encontrado")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    rag_sincronizado = _sincronizar_faq_rag(codigo, faq)
+    return {"status": "ok", "faq": faq, "rag_sincronizado": rag_sincronizado}
+
+
+@app.put("/api/ramos/{codigo_ramo}/faqs_jeff/{faq_id}")
+def actualizar_faq_jeff_ramo(codigo_ramo: str, faq_id: str, req: FaqJeffReq):
+    """Actualiza una pregunta guardada de Jeff y la re-indexa en RAG."""
+    codigo = codigo_ramo.upper()
+    try:
+        faq = router_jeff.actualizar_faq_jeff(
+            codigo_ramo=codigo,
+            faq_id=faq_id,
+            respuesta=req.respuesta,
+            palabras_clave=req.palabras_clave,
+            categoria=req.categoria,
+            pregunta=req.pregunta,
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Ramo no encontrado")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    rag_sincronizado = _sincronizar_faq_rag(codigo, faq)
+    return {"status": "ok", "faq": faq, "rag_sincronizado": rag_sincronizado}
+
+
+@app.delete("/api/ramos/{codigo_ramo}/faqs_jeff/{faq_id}")
+def eliminar_faq_jeff_ramo(codigo_ramo: str, faq_id: str):
+    """Elimina una pregunta guardada de Jeff y remueve su vector en RAG."""
+    codigo = codigo_ramo.upper()
+    try:
+        eliminada = router_jeff.eliminar_faq_jeff(codigo, faq_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Ramo no encontrado")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    rag_sincronizado = _eliminar_faq_rag(codigo, faq_id)
+    return {"status": "ok", "faq": eliminada, "rag_sincronizado": rag_sincronizado}
 
 
 _ESTILOS_SOCRATICOS = {

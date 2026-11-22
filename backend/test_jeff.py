@@ -1,6 +1,10 @@
-"""Prueba rápida del enrutador Jeff. No necesita Ollama ni Docker."""
+"""Pruebas unitarias y rápida del enrutador Jeff. No necesita Ollama ni Docker."""
 
 import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 import router_jeff
 
@@ -12,6 +16,85 @@ CASOS = [
     ("¿Cómo parametrizo la frontera de la semiesfera?", "MAT024"),
     ("ensalada de frutas", "TEL20425"),
 ]
+
+
+class TestRouterJeffCrud(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.data_dir = Path(self.tmpdir.name)
+        ramo_dir = self.data_dir / "TEST101"
+        ramo_dir.mkdir(parents=True, exist_ok=True)
+        with open(ramo_dir / "config.json", "w", encoding="utf-8") as archivo:
+            json.dump(
+                {
+                    "codigo": "TEST101",
+                    "nombre": "Curso Demo",
+                    "faqs_jeff": [
+                        {
+                            "id": "faq_inicial",
+                            "categoria": "General",
+                            "palabras_clave": ["horario"],
+                            "respuesta": "📌 [Jeff]: Lunes 10:00.",
+                        }
+                    ],
+                },
+                archivo,
+                ensure_ascii=False,
+                indent=2,
+            )
+        self.patcher = patch.object(router_jeff, "DATA_DIR", self.data_dir)
+        self.patcher.start()
+
+    def tearDown(self):
+        self.patcher.stop()
+        self.tmpdir.cleanup()
+
+    def test_crud_faqs_jeff_con_pregunta_y_autosugerencia(self):
+        # Listar inicial
+        faqs = router_jeff.listar_faqs_jeff("TEST101")
+        self.assertEqual(len(faqs), 1)
+
+        # Agregar con pregunta y sin palabras_clave -> auto-sugiere desde pregunta
+        creada = router_jeff.agregar_faq_jeff(
+            codigo_ramo="TEST101",
+            respuesta="La evaluación recuperativa es el martes 15 en sala C-201.",
+            palabras_clave=[],
+            categoria="Evaluaciones",
+            pregunta="¿Cuándo es la prueba recuperativa del curso?",
+        )
+        self.assertEqual(creada["pregunta"], "¿Cuándo es la prueba recuperativa del curso?")
+        self.assertIn("recuperativa", creada["palabras_clave"])
+        self.assertTrue(creada["respuesta"].startswith("📌"))
+
+        # Jeff responde por keyword auto-sugerida
+        match = router_jeff.resolver_consulta("consulta sobre recuperativa", "TEST101")
+        self.assertIsNotNone(match)
+        self.assertEqual(match["topico"], creada["id"])
+
+        # Actualizar FAQ
+        actualizada = router_jeff.actualizar_faq_jeff(
+            codigo_ramo="TEST101",
+            faq_id=creada["id"],
+            respuesta="La recuperativa cambió al miércoles 16 en sala B-102.",
+            palabras_clave=["recuperativa", "examen sustitutivo"],
+            categoria="Fechas y Entregas",
+            pregunta="¿Fecha actualizada de la evaluación recuperativa?",
+        )
+        self.assertEqual(actualizada["categoria"], "Fechas y Entregas")
+        self.assertEqual(
+            actualizada["pregunta"], "¿Fecha actualizada de la evaluación recuperativa?"
+        )
+        self.assertIn("examen sustitutivo", actualizada["palabras_clave"])
+        self.assertIn("miércoles 16", actualizada["respuesta"])
+
+        # Eliminar FAQ
+        eliminada = router_jeff.eliminar_faq_jeff("TEST101", creada["id"])
+        self.assertEqual(eliminada["id"], creada["id"])
+        self.assertEqual(len(router_jeff.listar_faqs_jeff("TEST101")), 1)
+
+        # Eliminar inexistente -> KeyError
+        with self.assertRaises(KeyError):
+            router_jeff.eliminar_faq_jeff("TEST101", "no_existe")
 
 
 def main() -> None:
@@ -28,4 +111,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    unittest.main()
