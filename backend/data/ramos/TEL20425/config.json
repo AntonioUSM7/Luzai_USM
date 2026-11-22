@@ -78,6 +78,14 @@
         "gns3"
       ],
       "respuesta": "📌 [Jeff - Info Administrativa TEL20425]: El texto guía es 'Computer Networking: A Top-Down Approach' (Kurose & Ross). Para las experiencias utilizamos Wireshark y GNS3/Packet Tracer."
+    },
+    {
+      "id": "docente_03733399",
+      "categoria": "Consultas Resueltas",
+      "palabras_clave": [
+        "redes"
+      ],
+      "respuesta": "📌 [Jeff - Respuesta Docente TEL20425]: Las redes es un sistema"
     }
   ]
 }

@@ -123,6 +123,7 @@ def responder_consulta(
                 respuesta=respuesta_limpia,
                 palabras_clave=claves,
                 categoria=categoria,
+                pregunta=objetivo.get("pregunta"),
             )
             objetivo["guardada_en_jeff"] = True
             objetivo["faq_jeff_id"] = faq_creada["id"]

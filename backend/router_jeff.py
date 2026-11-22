@@ -154,18 +154,10 @@ def sugerir_palabras_clave(pregunta: str, max_palabras: int = 6) -> List[str]:
     return sugeridas
 
 
-def agregar_faq_jeff(
-    codigo_ramo: str,
-    respuesta: str,
-    palabras_clave: List[str],
-    categoria: str = "Consultas Resueltas",
-    faq_id: Optional[str] = None,
-) -> Dict[str, Any]:
-    """
-    Agrega una nueva entrada en faqs_jeff dentro de config.json de forma thread-safe y atómica.
-    """
-    codigo = codigo_ramo.upper()
-    ruta = DATA_DIR / codigo / "config.json"
+def _limpiar_palabras_clave(
+    palabras_clave: Optional[List[str]],
+    pregunta: Optional[str] = None,
+) -> List[str]:
     claves_limpias: List[str] = []
     vistas = set()
     for palabra in palabras_clave or []:
@@ -175,22 +167,74 @@ def agregar_faq_jeff(
         vistas.add(clave)
         claves_limpias.append(clave)
 
+    if not claves_limpias and pregunta:
+        for palabra in sugerir_palabras_clave(pregunta):
+            clave = normalizar(str(palabra))
+            if len(clave) < 3 or clave in vistas:
+                continue
+            vistas.add(clave)
+            claves_limpias.append(clave)
+
     if not claves_limpias:
         raise ValueError("Se requiere al menos una palabra clave de 3 o más caracteres")
 
+    return claves_limpias
+
+
+def _formatear_respuesta_docente(respuesta: str, codigo: str) -> str:
     respuesta_limpia = (respuesta or "").strip()
     if not respuesta_limpia:
         raise ValueError("La respuesta de la FAQ no puede estar vacía")
-
     if not respuesta_limpia.startswith("📌"):
         respuesta_limpia = f"📌 [Jeff - Respuesta Docente {codigo}]: {respuesta_limpia}"
+    return respuesta_limpia
 
-    nueva_faq = {
+
+def _guardar_config_atomico(ruta: Path, config: Dict[str, Any]) -> None:
+    ruta_tmp = ruta.with_suffix(".json.tmp")
+    with open(ruta_tmp, "w", encoding="utf-8") as archivo:
+        json.dump(config, archivo, ensure_ascii=False, indent=2)
+    os.replace(ruta_tmp, ruta)
+
+
+def listar_faqs_jeff(codigo_ramo: str) -> List[Dict[str, Any]]:
+    """Lista las FAQs guardadas de Jeff para un ramo."""
+    codigo = codigo_ramo.upper()
+    ruta = DATA_DIR / codigo / "config.json"
+    with _CONFIG_LOCK:
+        if not ruta.exists():
+            raise FileNotFoundError(f"No existe config.json para el ramo {codigo}")
+        with open(ruta, "r", encoding="utf-8") as archivo:
+            config = json.load(archivo)
+    faqs = config.get("faqs_jeff", [])
+    return list(faqs) if isinstance(faqs, list) else []
+
+
+def agregar_faq_jeff(
+    codigo_ramo: str,
+    respuesta: str,
+    palabras_clave: Optional[List[str]] = None,
+    categoria: str = "Consultas Resueltas",
+    faq_id: Optional[str] = None,
+    pregunta: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Agrega una nueva entrada en faqs_jeff dentro de config.json de forma thread-safe y atómica.
+    """
+    codigo = codigo_ramo.upper()
+    ruta = DATA_DIR / codigo / "config.json"
+    pregunta_limpia = (pregunta or "").strip()
+    claves_limpias = _limpiar_palabras_clave(palabras_clave, pregunta=pregunta_limpia)
+    respuesta_limpia = _formatear_respuesta_docente(respuesta, codigo)
+
+    nueva_faq: Dict[str, Any] = {
         "id": faq_id or f"docente_{uuid.uuid4().hex[:8]}",
         "categoria": (categoria or "Consultas Resueltas").strip() or "Consultas Resueltas",
         "palabras_clave": claves_limpias,
         "respuesta": respuesta_limpia,
     }
+    if pregunta_limpia:
+        nueva_faq["pregunta"] = pregunta_limpia
 
     with _CONFIG_LOCK:
         if not ruta.exists():
@@ -203,10 +247,73 @@ def agregar_faq_jeff(
             faqs = []
             config["faqs_jeff"] = faqs
         faqs.append(nueva_faq)
-
-        ruta_tmp = ruta.with_suffix(".json.tmp")
-        with open(ruta_tmp, "w", encoding="utf-8") as archivo:
-            json.dump(config, archivo, ensure_ascii=False, indent=2)
-        os.replace(ruta_tmp, ruta)
+        _guardar_config_atomico(ruta, config)
 
     return nueva_faq
+
+
+def actualizar_faq_jeff(
+    codigo_ramo: str,
+    faq_id: str,
+    respuesta: str,
+    palabras_clave: Optional[List[str]] = None,
+    categoria: str = "Consultas Resueltas",
+    pregunta: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Actualiza una entrada existente en faqs_jeff dentro de config.json de forma atómica."""
+    codigo = codigo_ramo.upper()
+    ruta = DATA_DIR / codigo / "config.json"
+    pregunta_limpia = (pregunta or "").strip()
+    claves_limpias = _limpiar_palabras_clave(palabras_clave, pregunta=pregunta_limpia)
+    respuesta_limpia = _formatear_respuesta_docente(respuesta, codigo)
+    categoria_limpia = (categoria or "Consultas Resueltas").strip() or "Consultas Resueltas"
+
+    with _CONFIG_LOCK:
+        if not ruta.exists():
+            raise FileNotFoundError(f"No existe config.json para el ramo {codigo}")
+        with open(ruta, "r", encoding="utf-8") as archivo:
+            config = json.load(archivo)
+
+        faqs = config.get("faqs_jeff", [])
+        if not isinstance(faqs, list):
+            faqs = []
+
+        objetivo = next((f for f in faqs if f.get("id") == faq_id), None)
+        if objetivo is None:
+            raise KeyError(f"FAQ '{faq_id}' no encontrada en {codigo}")
+
+        objetivo["categoria"] = categoria_limpia
+        objetivo["palabras_clave"] = claves_limpias
+        objetivo["respuesta"] = respuesta_limpia
+        if pregunta_limpia:
+            objetivo["pregunta"] = pregunta_limpia
+        else:
+            objetivo.pop("pregunta", None)
+
+        _guardar_config_atomico(ruta, config)
+        return dict(objetivo)
+
+
+def eliminar_faq_jeff(codigo_ramo: str, faq_id: str) -> Dict[str, Any]:
+    """Elimina una entrada de faqs_jeff dentro de config.json de forma atómica."""
+    codigo = codigo_ramo.upper()
+    ruta = DATA_DIR / codigo / "config.json"
+
+    with _CONFIG_LOCK:
+        if not ruta.exists():
+            raise FileNotFoundError(f"No existe config.json para el ramo {codigo}")
+        with open(ruta, "r", encoding="utf-8") as archivo:
+            config = json.load(archivo)
+
+        faqs = config.get("faqs_jeff", [])
+        if not isinstance(faqs, list):
+            faqs = []
+
+        indice = next((i for i, f in enumerate(faqs) if f.get("id") == faq_id), None)
+        if indice is None:
+            raise KeyError(f"FAQ '{faq_id}' no encontrada en {codigo}")
+
+        eliminada = faqs.pop(indice)
+        config["faqs_jeff"] = faqs
+        _guardar_config_atomico(ruta, config)
+        return dict(eliminada)

@@ -5,6 +5,7 @@ import {
   EventoMetadataChat,
   ConsultaProfesor,
   ConfigSocratica,
+  FaqJeff,
 } from '../types';
 
 export const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
@@ -296,5 +297,86 @@ export async function actualizarConfigSocratica(
     throw new Error(detalle.detail || 'Error al guardar la configuración socrática');
   }
 
+  return respuesta.json();
+}
+
+export interface FaqJeffPayload {
+  pregunta?: string;
+  respuesta: string;
+  palabras_clave?: string[];
+  categoria?: string;
+}
+
+/**
+ * Lista las preguntas guardadas de Jeff para un ramo.
+ */
+export async function listarFaqsJeff(codigoRamo: string): Promise<FaqJeff[]> {
+  const respuesta = await fetch(`${API_URL}/api/ramos/${codigoRamo}/faqs_jeff`);
+  if (!respuesta.ok) {
+    throw new Error('Error al cargar las preguntas guardadas de Jeff');
+  }
+  const datos = await respuesta.json();
+  return datos.faqs || [];
+}
+
+/**
+ * Crea una nueva pregunta guardada de Jeff (y la sincroniza con RAG).
+ */
+export async function crearFaqJeff(
+  codigoRamo: string,
+  payload: FaqJeffPayload
+): Promise<{ faq: FaqJeff; rag_sincronizado: boolean }> {
+  const respuesta = await fetch(`${API_URL}/api/ramos/${codigoRamo}/faqs_jeff`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!respuesta.ok) {
+    const detalle = await respuesta.json().catch(() => ({}));
+    throw new Error(detalle.detail || 'Error al guardar la pregunta en Jeff');
+  }
+  return respuesta.json();
+}
+
+/**
+ * Actualiza una pregunta guardada de Jeff existente (y la re-indexa en RAG).
+ */
+export async function actualizarFaqJeff(
+  codigoRamo: string,
+  faqId: string,
+  payload: FaqJeffPayload
+): Promise<{ faq: FaqJeff; rag_sincronizado: boolean }> {
+  const respuesta = await fetch(
+    `${API_URL}/api/ramos/${codigoRamo}/faqs_jeff/${encodeURIComponent(faqId)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }
+  );
+  if (!respuesta.ok) {
+    const detalle = await respuesta.json().catch(() => ({}));
+    throw new Error(detalle.detail || 'Error al actualizar la pregunta de Jeff');
+  }
+  return respuesta.json();
+}
+
+/**
+ * Elimina una pregunta guardada de Jeff (y su vector asociado en RAG).
+ */
+export async function eliminarFaqJeff(
+  codigoRamo: string,
+  faqId: string
+): Promise<{ faq: FaqJeff; rag_sincronizado: boolean }> {
+  const respuesta = await fetch(
+    `${API_URL}/api/ramos/${codigoRamo}/faqs_jeff/${encodeURIComponent(faqId)}`,
+    {
+      method: 'DELETE',
+    }
+  );
+  if (!respuesta.ok) {
+    const detalle = await respuesta.json().catch(() => ({}));
+    throw new Error(detalle.detail || 'Error al eliminar la pregunta de Jeff');
+  }
   return respuesta.json();
 }

@@ -5,6 +5,7 @@ import {
   ConsultaProfesor,
   EstiloSocratico,
   ExtensionSocratica,
+  FaqJeff,
 } from '../../types';
 import {
   ArrowLeft,
@@ -26,6 +27,8 @@ import {
   MessageSquareMore,
   Send,
   Save,
+  Search,
+  Pencil,
 } from 'lucide-react';
 import {
   listarArchivosRamo,
@@ -37,6 +40,10 @@ import {
   responderConsultaProfesor,
   obtenerConfigSocratica,
   actualizarConfigSocratica,
+  listarFaqsJeff,
+  crearFaqJeff,
+  actualizarFaqJeff,
+  eliminarFaqJeff,
 } from '../../services/api';
 
 interface DocenteViewProps {
@@ -68,6 +75,19 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
   const [extensionSocratica, setExtensionSocratica] = useState<ExtensionSocratica>('media');
   const [cargandoSocratica, setCargandoSocratica] = useState<boolean>(false);
   const [guardandoSocratica, setGuardandoSocratica] = useState<boolean>(false);
+
+  // Estado del apartado de Preguntas Guardadas (Jeff + RAG)
+  const [faqsJeff, setFaqsJeff] = useState<FaqJeff[]>([]);
+  const [cargandoFaqs, setCargandoFaqs] = useState<boolean>(false);
+  const [busquedaFaqs, setBusquedaFaqs] = useState<string>('');
+  const [mostrarFormFaq, setMostrarFormFaq] = useState<boolean>(false);
+  const [faqEditandoId, setFaqEditandoId] = useState<string | null>(null);
+  const [faqPregunta, setFaqPregunta] = useState<string>('');
+  const [faqRespuesta, setFaqRespuesta] = useState<string>('');
+  const [faqCategoria, setFaqCategoria] = useState<string>('Consultas Resueltas');
+  const [faqPalabrasClave, setFaqPalabrasClave] = useState<string>('');
+  const [guardandoFaq, setGuardandoFaq] = useState<boolean>(false);
+  const [eliminandoFaqId, setEliminandoFaqId] = useState<string | null>(null);
 
   // Estado del gestor de archivos
   const [carpetas, setCarpetas] = useState<string[]>([]);
@@ -167,12 +187,140 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
     }
   };
 
+  const cargarFaqsJeffRamo = async () => {
+    if (!ramoActivo) return;
+    setCargandoFaqs(true);
+    try {
+      const lista = await listarFaqsJeff(ramoActivo.codigo);
+      setFaqsJeff(lista);
+    } catch (err) {
+      console.error(err);
+      mostrarMensaje('error', 'Error al cargar las preguntas guardadas de Jeff.');
+    } finally {
+      setCargandoFaqs(false);
+    }
+  };
+
   useEffect(() => {
     cargarDatosRamo();
     cargarConsultasRamo();
     cargarConfigSocraticaRamo();
+    cargarFaqsJeffRamo();
     setCarpetaSeleccionada(null);
+    setMostrarFormFaq(false);
+    setFaqEditandoId(null);
+    setBusquedaFaqs('');
   }, [ramoActivo?.codigo]);
+
+  const abrirNuevaFaq = () => {
+    setFaqEditandoId(null);
+    setFaqPregunta('');
+    setFaqRespuesta('');
+    setFaqCategoria('Consultas Resueltas');
+    setFaqPalabrasClave('');
+    setMostrarFormFaq(true);
+  };
+
+  const abrirEditarFaq = (faq: FaqJeff) => {
+    setFaqEditandoId(faq.id);
+    setFaqPregunta(faq.pregunta || '');
+    setFaqRespuesta(faq.respuesta || '');
+    setFaqCategoria(faq.categoria || 'Consultas Resueltas');
+    setFaqPalabrasClave((faq.palabras_clave || []).join(', '));
+    setMostrarFormFaq(true);
+  };
+
+  const cancelarFormFaq = () => {
+    setMostrarFormFaq(false);
+    setFaqEditandoId(null);
+  };
+
+  const manejarGuardarFaq = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!ramoActivo) return;
+
+    const respuestaLimpia = faqRespuesta.trim();
+    if (!respuestaLimpia) {
+      mostrarMensaje('error', 'Debes escribir una respuesta oficial.');
+      return;
+    }
+
+    const claves = faqPalabrasClave
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s.length >= 3);
+
+    if (claves.length === 0 && !faqPregunta.trim()) {
+      mostrarMensaje(
+        'error',
+        'Ingresa una pregunta de referencia o al menos una palabra clave (3+ caracteres).'
+      );
+      return;
+    }
+
+    setGuardandoFaq(true);
+    try {
+      const payload = {
+        pregunta: faqPregunta.trim() || undefined,
+        respuesta: respuestaLimpia,
+        categoria: faqCategoria.trim() || 'Consultas Resueltas',
+        palabras_clave: claves.length > 0 ? claves : undefined,
+      };
+
+      if (faqEditandoId) {
+        const res = await actualizarFaqJeff(ramoActivo.codigo, faqEditandoId, payload);
+        setFaqsJeff((prev) => prev.map((f) => (f.id === faqEditandoId ? res.faq : f)));
+        mostrarMensaje(
+          'exito',
+          res.rag_sincronizado
+            ? 'Pregunta actualizada en Jeff y sincronizada con el Tutor Socrático (RAG).'
+            : 'Pregunta actualizada en Jeff (RAG se sincronizará al reindexar).'
+        );
+      } else {
+        const res = await crearFaqJeff(ramoActivo.codigo, payload);
+        setFaqsJeff((prev) => [...prev, res.faq]);
+        mostrarMensaje(
+          'exito',
+          res.rag_sincronizado
+            ? 'Pregunta guardada en Jeff y disponible para el Tutor Socrático (RAG).'
+            : 'Pregunta guardada en Jeff (RAG se sincronizará al reindexar).'
+        );
+      }
+      cancelarFormFaq();
+    } catch (err) {
+      mostrarMensaje(
+        'error',
+        err instanceof Error ? err.message : 'No se pudo guardar la pregunta.'
+      );
+    } finally {
+      setGuardandoFaq(false);
+    }
+  };
+
+  const manejarEliminarFaq = async (faq: FaqJeff) => {
+    if (!ramoActivo) return;
+    const confirmar = window.confirm(
+      `¿Eliminar esta pregunta guardada (${faq.pregunta || faq.id})? Dejará de responder en Jeff y en el Tutor Socrático.`
+    );
+    if (!confirmar) return;
+
+    setEliminandoFaqId(faq.id);
+    try {
+      await eliminarFaqJeff(ramoActivo.codigo, faq.id);
+      setFaqsJeff((prev) => prev.filter((f) => f.id !== faq.id));
+      if (faqEditandoId === faq.id) {
+        cancelarFormFaq();
+      }
+      mostrarMensaje('exito', 'Pregunta eliminada de Jeff y del índice RAG.');
+    } catch (err) {
+      mostrarMensaje(
+        'error',
+        err instanceof Error ? err.message : 'No se pudo eliminar la pregunta.'
+      );
+    } finally {
+      setEliminandoFaqId(null);
+    }
+  };
 
   const manejarGuardarConfigSocratica = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -247,7 +395,8 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
       if (estado === 'descartada') {
         mostrarMensaje('exito', 'Consulta descartada.');
       } else if (guardarEnJeff) {
-        mostrarMensaje('exito', 'Respuesta guardada y agregada a las FAQs de Jeff ($0 GPU).');
+        cargarFaqsJeffRamo();
+        mostrarMensaje('exito', 'Respuesta guardada y agregada a las Preguntas Guardadas de Jeff y RAG.');
       } else {
         mostrarMensaje('exito', 'Consulta marcada como resuelta.');
       }
@@ -511,7 +660,12 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
           }`}
         >
           <Bot className="w-4 h-4" />
-          <span>Configuración de Jeff</span>
+          <span>Preguntas Guardadas (Jeff)</span>
+          {faqsJeff.length > 0 && (
+            <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-blue-50 text-usm-blue font-bold">
+              {faqsJeff.length}
+            </span>
+          )}
         </button>
 
         <button
@@ -1050,12 +1204,253 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
 
           {/* OTRAS SUB-PESTAÑAS */}
           {subTab === 'jeff' && (
-            <div className="bg-white p-8 rounded-2xl border border-slate-200 text-center space-y-2">
-              <Bot className="w-10 h-10 text-usm-blue mx-auto" />
-              <h3 className="text-base font-bold text-slate-800">Configuración de Jeff</h3>
-              <p className="text-xs text-slate-500 max-w-md mx-auto">
-                Aquí configuraremos las fechas de certámenes, requisitos de tareas y respuestas administrativas fijas.
-              </p>
+            <div className="space-y-4">
+              {/* Encabezado y acción principal */}
+              <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex flex-wrap items-center justify-between gap-4">
+                <div className="flex items-start gap-3">
+                  <div className="p-2.5 rounded-xl bg-blue-50 text-usm-blue border border-blue-200">
+                    <Bot className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-800">
+                      Preguntas Guardadas ({ramoActivo.codigo})
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-0.5 max-w-2xl">
+                      Jeff responde al instante por palabras clave ($0 GPU) y el Tutor Socrático también busca estas preguntas semánticamente vía RAG cuando un alumno pregunta con otras palabras.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={abrirNuevaFaq}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-usm-blue text-white text-xs font-bold hover:bg-blue-800 transition shadow-sm"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Nueva pregunta</span>
+                </button>
+              </div>
+
+              {/* Formulario de creación / edición */}
+              {mostrarFormFaq && (
+                <form
+                  onSubmit={manejarGuardarFaq}
+                  className="bg-white p-5 rounded-2xl border border-blue-200 shadow-sm space-y-4"
+                >
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                    <h4 className="text-xs font-bold text-slate-800">
+                      {faqEditandoId ? 'Editar pregunta guardada' : 'Nueva pregunta guardada'}
+                    </h4>
+                    <button
+                      type="button"
+                      onClick={cancelarFormFaq}
+                      className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
+                      title="Cancelar"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">
+                        Pregunta de referencia
+                      </label>
+                      <input
+                        type="text"
+                        value={faqPregunta}
+                        onChange={(e) => setFaqPregunta(e.target.value)}
+                        placeholder="Ej: ¿Cuándo se entrega el informe del Laboratorio 1?"
+                        className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-usm-blue"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">
+                        Categoría
+                      </label>
+                      <input
+                        type="text"
+                        value={faqCategoria}
+                        onChange={(e) => setFaqCategoria(e.target.value)}
+                        placeholder="Ej: Fechas y Entregas, Consultas Resueltas"
+                        className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-usm-blue"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Respuesta oficial
+                    </label>
+                    <textarea
+                      rows={3}
+                      value={faqRespuesta}
+                      onChange={(e) => setFaqRespuesta(e.target.value)}
+                      placeholder="Escribe la respuesta oficial que entregarán Jeff y el Tutor Socrático..."
+                      className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-usm-blue"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Palabras clave para Jeff (separadas por coma)
+                    </label>
+                    <input
+                      type="text"
+                      value={faqPalabrasClave}
+                      onChange={(e) => setFaqPalabrasClave(e.target.value)}
+                      placeholder="Ej: informe 1, entrega, plazo (si lo dejas vacío, se sugieren desde la pregunta)"
+                      className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-usm-blue"
+                    />
+                    <p className="text-[11px] text-slate-400 mt-1">
+                      Jeff interceptará consultas que contengan estas palabras clave; si no coinciden, el Tutor Socrático buscará por significado en RAG.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                    <button
+                      type="button"
+                      onClick={cancelarFormFaq}
+                      className="px-3.5 py-2 rounded-xl border border-slate-300 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={guardandoFaq}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-usm-blue text-white text-xs font-bold hover:bg-blue-800 disabled:opacity-50 transition shadow-sm"
+                    >
+                      <Save className="w-3.5 h-3.5" />
+                      <span>
+                        {guardandoFaq
+                          ? 'Guardando...'
+                          : faqEditandoId
+                          ? 'Guardar cambios'
+                          : 'Guardar pregunta'}
+                      </span>
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {/* Buscador y listado */}
+              <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+                <div className="relative">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={busquedaFaqs}
+                    onChange={(e) => setBusquedaFaqs(e.target.value)}
+                    placeholder="Buscar por pregunta, respuesta, categoría o palabras clave..."
+                    className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-xs focus:outline-none focus:ring-2 focus:ring-usm-blue"
+                  />
+                </div>
+
+                {cargandoFaqs ? (
+                  <p className="text-xs text-slate-500 py-8 text-center">
+                    Cargando preguntas guardadas...
+                  </p>
+                ) : (() => {
+                  const termino = busquedaFaqs.trim().toLowerCase();
+                  const filtradas = !termino
+                    ? faqsJeff
+                    : faqsJeff.filter((f) => {
+                        const bolsa = [
+                          f.pregunta || '',
+                          f.respuesta || '',
+                          f.categoria || '',
+                          ...(f.palabras_clave || []),
+                        ]
+                          .join(' ')
+                          .toLowerCase();
+                        return bolsa.includes(termino);
+                      });
+
+                  if (filtradas.length === 0) {
+                    return (
+                      <div className="py-8 text-center space-y-1.5">
+                        <Bot className="w-8 h-8 text-slate-300 mx-auto" />
+                        <p className="text-sm font-semibold text-slate-700">
+                          {faqsJeff.length === 0
+                            ? 'Aún no hay preguntas guardadas para este ramo'
+                            : 'No se encontraron preguntas con ese filtro'}
+                        </p>
+                        <p className="text-xs text-slate-500">
+                          Crea una nueva pregunta arriba o guarda una respuesta desde Consultas de Alumnos.
+                        </p>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="space-y-3">
+                      {filtradas.map((faq) => (
+                        <div
+                          key={faq.id}
+                          className="p-4 rounded-xl border border-slate-200 hover:border-slate-300 transition bg-slate-50/40 space-y-2.5"
+                        >
+                          <div className="flex flex-wrap items-start justify-between gap-2">
+                            <div className="space-y-1 flex-1 min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded-full bg-blue-50 text-usm-blue border border-blue-200">
+                                  {faq.categoria || 'General'}
+                                </span>
+                                <span className="text-[10px] font-mono text-slate-400">
+                                  {faq.id}
+                                </span>
+                              </div>
+                              {faq.pregunta && (
+                                <p className="text-sm font-semibold text-slate-800">
+                                  “{faq.pregunta}”
+                                </p>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => abrirEditarFaq(faq)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-[11px] font-semibold text-slate-700 hover:bg-slate-50 transition"
+                              >
+                                <Pencil className="w-3 h-3" />
+                                <span>Editar</span>
+                              </button>
+                              <button
+                                type="button"
+                                disabled={eliminandoFaqId === faq.id}
+                                onClick={() => manejarEliminarFaq(faq)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-red-200 bg-white text-[11px] font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50 transition"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                                <span>{eliminandoFaqId === faq.id ? 'Eliminando...' : 'Eliminar'}</span>
+                              </button>
+                            </div>
+                          </div>
+
+                          <p className="text-xs text-slate-700 whitespace-pre-wrap leading-relaxed bg-white p-3 rounded-lg border border-slate-100">
+                            {faq.respuesta}
+                          </p>
+
+                          {faq.palabras_clave && faq.palabras_clave.length > 0 && (
+                            <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                              <span className="text-[10px] font-semibold text-slate-500">
+                                Keywords Jeff:
+                              </span>
+                              {faq.palabras_clave.map((kw) => (
+                                <span
+                                  key={kw}
+                                  className="text-[10px] px-2 py-0.5 rounded-full bg-slate-200/70 text-slate-700 font-medium"
+                                >
+                                  {kw}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
+              </div>
             </div>
           )}
 
