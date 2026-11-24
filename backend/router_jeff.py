@@ -7,6 +7,7 @@ import unicodedata
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import quote
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data" / "ramos"
@@ -45,25 +46,68 @@ def cargar_config(codigo_ramo: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+_KEYWORDS_ADMIN_SEGURAS = {
+    "sala", "ubicacion", "edificio", "horario", "certamen", "prueba", "evaluacion",
+    "entrega", "plazo", "informe", "rubrica", "bibliografia", "libro", "texto",
+    "ayudantia", "ayudante", "profesor", "correo", "recuperativa", "examen",
+    "nota", "notas", "ponderacion", "asistencia", "wireshark", "gns3", "packet tracer",
+}
+
+_PATRON_EJERCICIO_TECNICO = re.compile(
+    r"\b(hosts?|mascara|subred(?:es)?|subnet\w*|calcula\w*|configura\w*|resuelv\w*|resolver|"
+    r"comando(?:s)?|implementa\w*|integral\w*|derivada\w*|matriz|matrices|"
+    r"deberia\s+usar|como\s+se\s+(?:calcula|configura|hace|implementa))\b|"
+    r"\b\d+\s*(?:hosts?|bits?|subredes?|ips?|usuarios?)\b|"
+    r"\b\d{1,3}(?:\.\d{1,3}){3}\b"
+)
+
+
 def _coincide(keyword_normalizada: str, mensaje_normalizado: str) -> bool:
     if not keyword_normalizada:
         return False
     if " " in keyword_normalizada:
-        return keyword_normalizada in mensaje_normalizado
+        patron = rf"(?<!\w){re.escape(keyword_normalizada)}(?!\w)"
+        return re.search(patron, mensaje_normalizado) is not None
+    if len(keyword_normalizada) <= 4:
+        patron = rf"(?<!\w){re.escape(keyword_normalizada)}(?:e?s)?(?!\w)"
+        return re.search(patron, mensaje_normalizado) is not None
     patron = rf"(?<!\w){re.escape(keyword_normalizada)}\w*(?!\w)"
     return re.search(patron, mensaje_normalizado) is not None
 
 
 def _puntuar(palabras_clave: List[str], mensaje_normalizado: str) -> Tuple[int, List[str]]:
-    coincidencias = []
+    coincidencias: List[str] = []
+    tiene_frase = False
+
     for palabra in palabras_clave or []:
         clave = normalizar(str(palabra))
         if len(clave) < 3:
             continue
         if _coincide(clave, mensaje_normalizado):
             coincidencias.append(clave)
+            if " " in clave:
+                tiene_frase = True
 
-    puntaje = sum(len(clave) for clave in coincidencias)
+    if not coincidencias:
+        return 0, []
+
+    # Guard anti-secuestro: si no coincidió ninguna frase completa, evitar que una
+    # palabra genérica aislada (ej. "red" en un ejercicio de subnetting) intercepte el chat.
+    if not tiene_frase:
+        raices = {c[:4] for c in coincidencias}
+        es_admin_segura = any(c in _KEYWORDS_ADMIN_SEGURAS for c in coincidencias)
+        if len(raices) == 1 and not es_admin_segura:
+            if _PATRON_EJERCICIO_TECNICO.search(mensaje_normalizado):
+                return 0, []
+            palabras_utiles = [
+                t for t in re.findall(r"[a-z0-9]{3,}", mensaje_normalizado)
+                if t not in _STOPWORDS_ES
+            ]
+            max_len_kw = max(len(c) for c in coincidencias)
+            if max_len_kw <= 4 and len(palabras_utiles) >= 4:
+                return 0, []
+
+    puntaje = sum(len(clave) * (2 if " " in clave else 1) for clave in coincidencias)
     return puntaje, coincidencias
 
 
@@ -72,7 +116,7 @@ def _formatear_tarea(tarea: Dict[str, Any], codigo_ramo: str) -> str:
         return tarea["respuesta"]
 
     lineas = [
-        f"📌 [Jeff - Info Administrativa {codigo_ramo}]: {tarea.get('titulo', 'Tarea')}"
+        f"[Jeff - Info Administrativa {codigo_ramo}]: {tarea.get('titulo', 'Tarea')}"
     ]
     if tarea.get("fecha_limite"):
         lineas.append(f"• Fecha límite: {tarea['fecha_limite']}")
@@ -97,7 +141,156 @@ def _mejor_coincidencia(
     return mejor
 
 
-def resolver_consulta(mensaje: str, codigo_ramo: str) -> Optional[Dict[str, Any]]:
+def _etiqueta_documento_planificacion(ruta_en_plan: Path) -> str:
+    """Genera una etiqueta legible a partir de la subcarpeta y/o nombre del archivo."""
+    partes_dir = list(ruta_en_plan.parent.parts)
+    stem_limpio = re.sub(r"[_-]+", " ", ruta_en_plan.stem).strip()
+    if partes_dir:
+        sub = " / ".join(re.sub(r"[_-]+", " ", p).strip() for p in partes_dir)
+        if stem_limpio.lower() in ("planificacion", "cronograma", "calendario", sub.lower()):
+            return f"Planificación de {sub}"
+        return f"{sub} ({stem_limpio})"
+    return stem_limpio or ruta_en_plan.name
+
+
+def listar_documentos_planificacion(codigo_ramo: str) -> List[Dict[str, str]]:
+    """Lista todos los documentos disponibles dentro de documentos/Planificacion/ (y subcarpetas)."""
+    codigo = codigo_ramo.upper()
+    dir_documentos = DATA_DIR / codigo / "documentos"
+    dir_plan = dir_documentos / "Planificacion"
+    if not dir_plan.exists() or not dir_plan.is_dir():
+        return []
+
+    docs: List[Dict[str, str]] = []
+    for item in sorted(dir_plan.rglob("*")):
+        if not item.is_file() or item.name.startswith("."):
+            continue
+        rel_en_plan = item.relative_to(dir_plan)
+        if any(p.startswith(".") for p in rel_en_plan.parts):
+            continue
+        ruta_relativa = item.relative_to(dir_documentos).as_posix()
+        docs.append({
+            "nombre": item.name,
+            "ruta_relativa": ruta_relativa,
+            "carpeta": item.parent.relative_to(dir_documentos).as_posix(),
+            "etiqueta": _etiqueta_documento_planificacion(rel_en_plan),
+            "url": f"/api/ramos/{codigo}/documentos/{quote(ruta_relativa, safe='/')}",
+        })
+    return docs
+
+
+_PATRON_PREGUNTA_ESPECIFICA_PLAN = re.compile(
+    r"\b(experiencia|exp|laboratorio|lab|clase|sesion|semana)\s*0*\d+\b|"
+    r"\b(ot\s*\d+|pres(?:entacion)?\s*\d+|certamen|fiestas\s+patrias|vacaciones|notas\s+finales)\b|"
+    r"\b(que\s+se\s+ve\s+en|que\s+entra\s+en|que\s+toca\s+en|cuando\s+es|que\s+fecha\s+es|que\s+pasa\s+en)\b"
+)
+
+_PATRON_CONSULTA_PLANIFICACION_GENERAL = re.compile(
+    r"\b(planificacion|planificaciones|cronograma|calendario|programa\s+del\s+curso|fechas\s+del\s+curso)\b"
+)
+
+
+def _resolver_planificacion_documentos(
+    mensaje_normalizado: str,
+    codigo: str,
+) -> Optional[Dict[str, Any]]:
+    docs = listar_documentos_planificacion(codigo)
+    if not docs:
+        return None
+
+    # Si pregunta algo puntual de contenido/fecha (ej. "que se ve en la experiencia 3?"),
+    # dejar que pase al canal RAG informativo (que responderá y adjuntará el link al PDF).
+    if _PATRON_PREGUNTA_ESPECIFICA_PLAN.search(mensaje_normalizado):
+        return None
+
+    # Verificar si coincide directamente con alguna etiqueta/archivo de planificación
+    # (ej. al hacer clic en un botón de desambiguación o pedir "planificacion del proyecto").
+    tokens_msg = {
+        t
+        for t in re.findall(r"[a-z0-9]{3,}", mensaje_normalizado)
+        if t not in _STOPWORDS_ES and t not in ("planificacion", "planificaciones", "ver", "curso", "del", "las", "los")
+    }
+
+    coincidencias_doc: List[Tuple[int, Dict[str, str]]] = []
+    for doc in docs:
+        etiqueta_norm = normalizar(doc["etiqueta"])
+        if etiqueta_norm and etiqueta_norm in mensaje_normalizado:
+            coincidencias_doc.append((100, doc))
+            continue
+        bolsa_doc = normalizar(f"{doc['etiqueta']} {doc['nombre']}")
+        tokens_doc = {
+            t
+            for t in re.findall(r"[a-z0-9]{3,}", bolsa_doc)
+            if t not in _STOPWORDS_ES and t not in ("planificacion", "pdf", "docx", "txt")
+        }
+        comunes = tokens_msg.intersection(tokens_doc)
+        if comunes:
+            coincidencias_doc.append((sum(len(t) for t in comunes), doc))
+
+    es_consulta_general = bool(_PATRON_CONSULTA_PLANIFICACION_GENERAL.search(mensaje_normalizado))
+
+    if not es_consulta_general and not coincidencias_doc:
+        return None
+
+    # Caso 1: Solo hay 1 documento de planificación -> entregar enlace directo
+    if len(docs) == 1:
+        doc = docs[0]
+        return {
+            "canal": "JEFF_ADMIN",
+            "tipo": "planificacion_doc",
+            "topico": "planificacion_documento",
+            "categoria": "Planificación del Curso",
+            "respuesta": (
+                f"[Jeff - Planificación {codigo}]: Puedes revisar la planificación oficial "
+                f"en el siguiente documento:\n\n"
+                f"- [{doc['etiqueta']} ({doc['nombre']})]({doc['url']})"
+            ),
+            "coincidencias": ["planificacion"],
+            "puntaje": 100,
+        }
+
+    # Caso 2: Hay múltiples documentos y el alumno indicó uno específico
+    if coincidencias_doc:
+        coincidencias_doc.sort(key=lambda x: x[0], reverse=True)
+        mejor_score = coincidencias_doc[0][0]
+        ganadores = [d for s, d in coincidencias_doc if s == mejor_score]
+        if len(ganadores) == 1:
+            doc = ganadores[0]
+            return {
+                "canal": "JEFF_ADMIN",
+                "tipo": "planificacion_doc",
+                "topico": "planificacion_documento",
+                "categoria": "Planificación del Curso",
+                "respuesta": (
+                    f"[Jeff - Planificación {codigo}]: Aquí tienes el documento correspondiente:\n\n"
+                    f"- [{doc['etiqueta']} ({doc['nombre']})]({doc['url']})"
+                ),
+                "coincidencias": [doc["etiqueta"]],
+                "puntaje": 100,
+            }
+
+    # Caso 3: Hay múltiples documentos y la consulta es general -> desambiguación con botones clicables
+    opciones = [f"Ver {d['etiqueta']}" for d in docs]
+    return {
+        "canal": "JEFF_ADMIN",
+        "tipo": "planificacion_desambiguacion",
+        "topico": "planificacion_opciones",
+        "categoria": "Planificación del Curso",
+        "respuesta": (
+            f"[Jeff - Planificación {codigo}]: Hay más de un documento de planificación "
+            "disponible para este curso. ¿Cuál necesitas revisar?"
+        ),
+        "sugerencias": opciones,
+        "coincidencias": ["planificacion"],
+        "puntaje": 100,
+    }
+
+
+def resolver_consulta(
+    mensaje: str,
+    codigo_ramo: str,
+    historial: Optional[List[Dict[str, str]]] = None,
+) -> Optional[Dict[str, Any]]:
     """
     Intenta resolver una consulta administrativa sin usar GPU.
     Devuelve un dict con la respuesta si hay coincidencia, o None si es pedagógica.
@@ -121,6 +314,10 @@ def resolver_consulta(mensaje: str, codigo_ramo: str) -> Optional[Dict[str, Any]
             "coincidencias": coincidencias,
             "puntaje": puntaje,
         }
+
+    plan_doc = _resolver_planificacion_documentos(mensaje_normalizado, codigo)
+    if plan_doc:
+        return plan_doc
 
     faq = _mejor_coincidencia(config.get("faqs_jeff", []), mensaje_normalizado)
     if faq:
@@ -183,10 +380,12 @@ def _limpiar_palabras_clave(
 
 def _formatear_respuesta_docente(respuesta: str, codigo: str) -> str:
     respuesta_limpia = (respuesta or "").strip()
+    if respuesta_limpia.startswith("📌"):
+        respuesta_limpia = respuesta_limpia.lstrip("📌").strip()
     if not respuesta_limpia:
         raise ValueError("La respuesta de la FAQ no puede estar vacía")
-    if not respuesta_limpia.startswith("📌"):
-        respuesta_limpia = f"📌 [Jeff - Respuesta Docente {codigo}]: {respuesta_limpia}"
+    if not respuesta_limpia.startswith("[Jeff"):
+        respuesta_limpia = f"[Jeff - Respuesta Docente {codigo}]: {respuesta_limpia}"
     return respuesta_limpia
 
 

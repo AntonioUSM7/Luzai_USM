@@ -23,6 +23,7 @@ export interface EventoMetadataChat {
   motivo?: string;
   topico?: string;
   categoria?: string;
+  sugerencias?: string[];
 }
 
 export interface MensajeChat {
@@ -35,6 +36,7 @@ export interface MensajeChat {
   motivoFallback?: string;
   preguntaOriginal?: string;
   estadoEscalamiento?: 'idle' | 'enviando' | 'enviada' | 'error';
+  sugerencias?: string[];
 }
 
 export interface FaqJeff {

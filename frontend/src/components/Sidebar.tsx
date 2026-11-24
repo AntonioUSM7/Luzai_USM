@@ -1,5 +1,12 @@
 import React from 'react';
-import { BookOpen, LogOut, GraduationCap, UserCheck, ChevronLeft, PanelLeftClose, LayoutGrid } from 'lucide-react';
+import {
+  BookOpen,
+  LogOut,
+  GraduationCap,
+  UserCheck,
+  ChevronLeft,
+  LayoutGrid,
+} from 'lucide-react';
 import { Ramo, Usuario } from '../types';
 import logoUsm from '../resources/marca-color.png';
 
@@ -25,101 +32,121 @@ export const Sidebar: React.FC<SidebarProps> = ({
   return (
     <aside
       className={`relative ${
-        sidebarVisible ? 'w-72 opacity-100' : 'w-0 opacity-0 -translate-x-full overflow-hidden pointer-events-none'
-      } transition-all duration-300 ease-in-out bg-usm-blue text-white flex flex-col h-full border-r border-usm-dark shadow-lg shrink-0`}
+        sidebarVisible
+          ? 'w-72 opacity-100'
+          : 'w-0 opacity-0 -translate-x-full overflow-hidden pointer-events-none'
+      } transition-all duration-300 ease-in-out bg-gradient-to-b from-white via-[#EFF5FC] to-[#D4E5F7] text-slate-900 flex flex-col h-full border-r border-slate-200/90 shrink-0`}
     >
-      {/* Botón redondo en el borde medio de la barra para esconderla */}
+      {/* Botón en el borde medio para ocultar la barra */}
       {sidebarVisible && (
         <button
           onClick={onToggleSidebar}
           title="Ocultar barra lateral"
-          className="absolute top-1/2 -right-3.5 -translate-y-1/2 z-40 w-8 h-8 rounded-full bg-usm-blue text-white shadow-xl border-2 border-white hover:bg-usm-dark hover:scale-110 active:scale-95 transition-all flex items-center justify-center group"
+          className="absolute top-1/2 -right-3.5 -translate-y-1/2 z-40 w-7 h-7 rounded-sm bg-white text-[#1E4478] border border-slate-300 shadow-sm hover:bg-[#1E4478] hover:text-white hover:border-[#1E4478] transition-all flex items-center justify-center group"
         >
-          <ChevronLeft className="w-4 h-4 text-white group-hover:-translate-x-0.5 transition-transform" />
+          <ChevronLeft className="w-4 h-4 group-hover:-translate-x-0.5 transition-transform" />
         </button>
       )}
 
-      {/* Encabezado AULA USM: Logo arriba, botón de esconder y Nombre de IA abajo */}
-      <div className="p-4 border-b border-white/10 bg-usm-dark/40 space-y-3">
-        {/* Fila del Logo Oficial + Botón claro para esconder */}
-        <div className="flex items-center gap-2">
-          <div className="bg-white rounded-xl p-2 flex-1 flex items-center justify-center shadow-sm">
-            <img
-              src={logoUsm}
-              alt="Logo Institucional USM"
-              className="h-9 w-auto max-w-full object-contain"
-            />
-          </div>
+      {/* Franja superior sólida que conecta sin corte con el degradado de la página */}
+      <div
+        aria-hidden="true"
+        className="h-1 w-full bg-[#234E86] shrink-0"
+      />
 
+      {/* Encabezado: Logo USM integrado directamente sin cuadro blanco + LuzIA */}
+      <div className="px-5 pt-5 pb-4 border-b border-slate-200/70 space-y-4">
+        <div className="flex items-center">
+          <img
+            src={logoUsm}
+            alt="Universidad Técnica Federico Santa María"
+            className="h-9 w-auto max-w-full object-contain"
+          />
         </div>
 
-        {/* Fila del Nombre de la IA y Rol */}
-        <div className="flex items-center justify-between pt-1">
+        <div className="flex items-end justify-between">
           <div>
-            <h1 className="font-bold text-lg leading-tight tracking-tight text-white">
-              LuzAI <span className="text-usm-gold font-semibold text-sm">USM</span>
+            <h1 className="font-display font-extrabold text-xl leading-none tracking-tight text-slate-950">
+              LuzIA <span className="text-[#3A70B2] font-bold text-sm">USM</span>
             </h1>
-            <p className="text-xs text-blue-100/80">Tutor AULA Inteligente</p>
+            <p className="text-[11px] text-slate-500 mt-1">Tutor AULA Inteligente</p>
           </div>
-          <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-usm-gold text-usm-dark uppercase tracking-wider">
+          <span className="font-mono text-[10px] font-semibold px-2 py-0.5 rounded-sm bg-[#1E4478] text-white uppercase tracking-[0.12em]">
             {usuario.rol}
           </span>
         </div>
       </div>
 
-      {/* Lista de Asignaturas */}
-      <div className="p-4 flex-1 overflow-y-auto">
-        {/* Acceso directo a Vista General "Mis Cursos" */}
+      {/* Navegación y Lista de Asignaturas */}
+      <div className="px-4 py-5 flex-1 overflow-y-auto space-y-6">
+        {/* Acceso directo a Panel de Inicio (Mis Cursos) */}
         <button
           onClick={() => onSeleccionarRamo(null)}
-          className={`w-full text-left p-2.5 rounded-xl transition border text-xs font-semibold flex items-center gap-2 mb-4 ${
+          className={`w-full text-left px-3 py-2.5 rounded-sm transition text-xs font-semibold flex items-center gap-2.5 border-l-2 ${
             ramoActivo === null
-              ? 'bg-usm-dark text-white border-usm-gold shadow-sm ring-1 ring-usm-gold/40'
-              : 'bg-white/5 border-white/5 hover:bg-white/10 text-blue-100 hover:text-white'
+              ? 'bg-white/90 text-[#1E4478] border-l-[#1E4478] shadow-[0_1px_2px_rgba(30,68,120,0.06)]'
+              : 'border-l-transparent text-slate-600 hover:bg-white/60 hover:text-slate-950'
           }`}
         >
-          <LayoutGrid className="w-4 h-4 text-usm-gold shrink-0" />
+          <LayoutGrid
+            className={`w-4 h-4 shrink-0 ${
+              ramoActivo === null ? 'text-[#234E86]' : 'text-slate-400'
+            }`}
+          />
           <span>Panel de Inicio (Mis Cursos)</span>
         </button>
 
-        <h2 className="text-[11px] uppercase tracking-wider text-blue-200/90 font-bold mb-3 flex items-center gap-1.5">
-          <BookOpen className="w-3.5 h-3.5 text-usm-gold" />
-          Mis Asignaturas
-        </h2>
+        <div>
+          <h2 className="px-2 font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500 font-semibold mb-2.5 flex items-center gap-1.5">
+            <BookOpen className="w-3.5 h-3.5 text-[#3A70B2]" />
+            <span>Mis Asignaturas</span>
+          </h2>
 
-        <div className="space-y-2">
-          {ramos.map((ramo) => {
-            const activo = ramoActivo?.codigo === ramo.codigo;
-            return (
-              <button
-                key={ramo.codigo}
-                onClick={() => onSeleccionarRamo(ramo)}
-                className={`w-full text-left p-3 rounded-xl transition border text-sm ${
-                  activo
-                    ? 'bg-usm-dark text-white font-semibold border-usm-gold/80 shadow-md ring-1 ring-usm-gold/40'
-                    : 'bg-white/5 border-white/5 hover:bg-white/10 text-blue-100 hover:text-white'
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-usm-gold">{ramo.codigo}</span>
-                  {activo && (
-                    <span className="text-[10px] bg-usm-gold/20 text-usm-gold px-1.5 py-0.2 rounded font-medium">
-                      Activo
+          <div className="space-y-1.5">
+            {ramos.map((ramo) => {
+              const activo = ramoActivo?.codigo === ramo.codigo;
+              return (
+                <button
+                  key={ramo.codigo}
+                  onClick={() => onSeleccionarRamo(ramo)}
+                  className={`w-full text-left px-3 py-3 rounded-sm transition border-l-2 ${
+                    activo
+                      ? 'bg-[#1E4478]/[0.14] border-l-[#1E4478] text-slate-950'
+                      : 'bg-[#1E4478]/[0.06] border-l-transparent hover:bg-[#1E4478]/[0.11] text-slate-700 hover:text-slate-950'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span
+                      className={`font-mono text-[11px] font-bold tracking-wider ${
+                        activo ? 'text-[#1E4478]' : 'text-[#3A70B2]'
+                      }`}
+                    >
+                      {ramo.codigo}
                     </span>
-                  )}
-                </div>
-                <div className="mt-1 leading-snug line-clamp-2 text-xs">{ramo.nombre}</div>
-              </button>
-            );
-          })}
+                    {activo && (
+                      <span className="font-mono text-[9px] uppercase tracking-wider text-[#1E4478] bg-[#E6F0FA] px-1.5 py-0.5 rounded-sm font-semibold">
+                        Activo
+                      </span>
+                    )}
+                  </div>
+                  <div
+                    className={`mt-1 leading-snug line-clamp-2 text-xs ${
+                      activo ? 'font-display font-bold text-slate-950' : 'font-medium text-slate-600'
+                    }`}
+                  >
+                    {ramo.nombre}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
         </div>
       </div>
 
-      {/* Zona Inferior: Perfil + Botón de Logout */}
-      <div className="p-4 border-t border-white/10 bg-usm-dark/60 space-y-3">
-        {/* Identificación del Usuario */}
-        <div className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-white/5 border border-white/5">
-          <div className="w-8 h-8 rounded-full bg-blue-100 text-usm-blue flex items-center justify-center shrink-0">
+      {/* Zona Inferior: Perfil + Cerrar Sesión */}
+      <div className="p-4 border-t border-[#1E4478]/10 bg-white/40 backdrop-blur-[2px] space-y-3">
+        <div className="flex items-center gap-3 px-2 py-1">
+          <div className="w-8 h-8 rounded-sm bg-[#1E4478] text-white flex items-center justify-center shrink-0">
             {usuario.rol === 'alumno' ? (
               <GraduationCap className="w-4 h-4" />
             ) : (
@@ -127,17 +154,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
             )}
           </div>
           <div className="truncate">
-            <p className="text-xs font-semibold text-white truncate">{usuario.nombre}</p>
-            <p className="text-[10px] text-blue-200/70 capitalize">{usuario.rol}</p>
+            <p className="font-display text-xs font-bold text-slate-900 truncate">
+              {usuario.nombre}
+            </p>
+            <p className="font-mono text-[10px] uppercase tracking-wider text-slate-500">
+              {usuario.rol}
+            </p>
           </div>
         </div>
 
-        {/* Botón de Cerrar Sesión */}
         <button
           onClick={onCerrarSesion}
-          className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-red-600/90 hover:bg-red-600 text-white font-semibold text-xs transition shadow-md hover:shadow-lg active:scale-[0.99] border border-red-400/40"
+          className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-sm border border-red-300/80 bg-white/80 hover:bg-red-600 hover:border-red-600 text-red-600 hover:text-white font-display font-semibold text-xs transition-colors"
         >
-          <LogOut className="w-4 h-4" />
+          <LogOut className="w-3.5 h-3.5" />
           <span>Cerrar Sesión</span>
         </button>
       </div>

@@ -50,7 +50,7 @@
         "cuando se entrega",
         "fecha"
       ],
-      "respuesta": "📌 [Jeff - Info Administrativa TEL20425]: La entrega del Informe del Laboratorio 1 vence el viernes a las 23:59 hrs a través de AULA USM en formato PDF."
+      "respuesta": "[Jeff - Info Administrativa TEL20425]: La entrega del Informe del Laboratorio 1 vence el viernes a las 23:59 hrs a través de AULA USM en formato PDF."
     },
     {
       "id": "tel_sala",
@@ -63,7 +63,7 @@
         "laboratorio",
         "horario"
       ],
-      "respuesta": "📌 [Jeff - Info Administrativa TEL20425]: Las sesiones prácticas de TEL20425 se realizan en el Laboratorio de Redes de Computadores (Pabellón C, Sala C-204)."
+      "respuesta": "[Jeff - Info Administrativa TEL20425]: Las sesiones prácticas de TEL20425 se realizan en el Laboratorio de Redes de Computadores (Pabellón C, Sala C-204)."
     },
     {
       "id": "tel_bibliografia",
@@ -77,15 +77,18 @@
         "packet tracer",
         "gns3"
       ],
-      "respuesta": "📌 [Jeff - Info Administrativa TEL20425]: El texto guía es 'Computer Networking: A Top-Down Approach' (Kurose & Ross). Para las experiencias utilizamos Wireshark y GNS3/Packet Tracer."
+      "respuesta": "[Jeff - Info Administrativa TEL20425]: El texto guía es 'Computer Networking: A Top-Down Approach' (Kurose & Ross). Para las experiencias utilizamos Wireshark y GNS3/Packet Tracer."
     },
     {
       "id": "docente_03733399",
       "categoria": "Consultas Resueltas",
       "palabras_clave": [
-        "redes"
+        "que es una red",
+        "que son las redes",
+        "que es una network",
+        "definicion de red"
       ],
-      "respuesta": "📌 [Jeff - Respuesta Docente TEL20425]: Las redes es un sistema"
+      "respuesta": "[Jeff - Respuesta Docente TEL20425]: Una red (en el ámbito tecnológico e informático) es un conjunto de dos o más dispositivos (como computadores, servidores, teléfonos, routers o switches) conectados entre sí mediante medios físicos (cables de cobre, fibra óptica) o inalámbricos (Wi-Fi, Bluetooth, ondas de radio) con el objetivo de compartir información, recursos y servicios."
     }
   ]
 }
