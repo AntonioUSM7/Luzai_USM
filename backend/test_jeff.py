@@ -64,7 +64,7 @@ class TestRouterJeffCrud(unittest.TestCase):
         )
         self.assertEqual(creada["pregunta"], "¿Cuándo es la prueba recuperativa del curso?")
         self.assertIn("recuperativa", creada["palabras_clave"])
-        self.assertTrue(creada["respuesta"].startswith("📌"))
+        self.assertTrue(creada["respuesta"].startswith("[Jeff"))
 
         # Jeff responde por keyword auto-sugerida
         match = router_jeff.resolver_consulta("consulta sobre recuperativa", "TEST101")
@@ -95,6 +95,55 @@ class TestRouterJeffCrud(unittest.TestCase):
         # Eliminar inexistente -> KeyError
         with self.assertRaises(KeyError):
             router_jeff.eliminar_faq_jeff("TEST101", "no_existe")
+
+    def test_planificacion_documentos_y_desambiguacion(self):
+        dir_plan = self.data_dir / "TEST101" / "documentos" / "Planificacion"
+        dir_plan.mkdir(parents=True, exist_ok=True)
+        (dir_plan / "Planificacion_Materia.pdf").write_bytes(b"%PDF-1.4")
+
+        # 1 documento: entrega enlace directo
+        r1 = router_jeff.resolver_consulta("cual es la planificacion del curso?", "TEST101")
+        self.assertIsNotNone(r1)
+        self.assertEqual(r1["canal"], "JEFF_ADMIN")
+        self.assertIn("/api/ramos/TEST101/documentos/Planificacion/Planificacion_Materia.pdf", r1["respuesta"])
+
+        # 2 documentos: pregunta general ofrece botones clicables de desambiguación
+        (dir_plan / "Planificacion_Proyecto.pdf").write_bytes(b"%PDF-1.4")
+        r2 = router_jeff.resolver_consulta("cual es la planificacion del curso?", "TEST101")
+        self.assertIsNotNone(r2)
+        self.assertEqual(r2["tipo"], "planificacion_desambiguacion")
+        self.assertEqual(len(r2.get("sugerencias") or []), 2)
+
+        # Al elegir una opción específica (ej. clic en botón), devuelve el enlace exacto
+        r3 = router_jeff.resolver_consulta("Ver Planificacion Proyecto", "TEST101")
+        self.assertIsNotNone(r3)
+        self.assertEqual(r3["tipo"], "planificacion_doc")
+        self.assertIn("Planificacion_Proyecto.pdf", r3["respuesta"])
+
+        # Consulta puntual sobre experiencia 3 pasa al canal RAG informativo (retorna None en Jeff)
+        r4 = router_jeff.resolver_consulta("que se ve en la experiencia 3?", "TEST101")
+        self.assertIsNone(r4)
+
+    def test_guard_anti_secuestro_keyword_generica_en_ejercicio_tecnico(self):
+        router_jeff.agregar_faq_jeff(
+            codigo_ramo="TEST101",
+            respuesta="Una red es un conjunto de dispositivos conectados.",
+            palabras_clave=["red", "redes", "que es una red"],
+            categoria="Consultas Resueltas",
+            pregunta="¿Qué es una red?",
+        )
+
+        # Ejercicio técnico de subnetting que menciona "red" NO debe ser secuestrado por Jeff
+        r_ej = router_jeff.resolver_consulta(
+            "si tengo quiero una red 10 host, que mascara deberia usar",
+            "TEST101",
+        )
+        self.assertIsNone(r_ej)
+
+        # Pregunta directa por frase exacta SÍ debe responder desde Jeff
+        r_def = router_jeff.resolver_consulta("que es una red?", "TEST101")
+        self.assertIsNotNone(r_def)
+        self.assertEqual(r_def["canal"], "JEFF_ADMIN")
 
 
 def main() -> None:

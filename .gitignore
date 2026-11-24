@@ -47,3 +47,8 @@ backend/data/analytics/*.jsonl
 # Operating System files
 .DS_Store
 Thumbs.db
+
+
+# Datos ramos
+backend/data/ramos/*/documentos/*
+!backend/data/ramos/*/documentos/.gitkeep

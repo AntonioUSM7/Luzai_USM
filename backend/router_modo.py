@@ -56,6 +56,8 @@ _PATRONES_SALUDO: List[str] = [
 
 _PALABRAS_META: List[str] = [
     "tema", "temas", "prueba", "examen", "certamen", "tarea", "laboratorio",
+    "experiencia", "planificacion", "cronograma", "evaluacion", "presentacion",
+    "fecha", "fechas", "paralelo",
     "ramo", "curso", "clase", "apunte", "apuntes", "profesor", "ayudante", "horario",
     "ejercicio", "ejercicios", "problema", "problemas", "guia", "guias",
     "pista", "pistas", "solucion", "resultado", "desarrollo",
@@ -132,3 +134,24 @@ def es_calculo_directo(mensaje: str) -> bool:
     if not any(re.search(patron, texto) for patron in _PATRONES_CALCULO_DIRECTO):
         return False
     return any(re.search(patron, texto) for patron in _PATRONES_DATOS_CALCULO)
+
+
+_PATRONES_ADMIN_PLANIFICACION: List[str] = [
+    r"\b(experiencia|exp|laboratorio|lab)[\s_]*(?:n[°º]?\s*)?\d+\b",
+    r"\b(clase|sesion|semana)\s*(?:n[°º]?\s*)?\d+\b",
+    r"\b(ot\s*\d+|pres(?:entacion)?\s*\d+|certamen|evaluacion|evaluaciones|presentacion\s+(?:inicial|avance|final))\b",
+    r"\b(planificacion|cronograma|calendario|fechas?\s+de|cuando\s+(?:es|son|se|toca|hay|entregan)|que\s+dia\s+(?:es|son|toca|hay))\b",
+    r"\b(que\s+se\s+ve\s+en|que\s+entra\s+en|que\s+toca\s+en|que\s+pasa\s+en\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre))\b",
+    r"\b(paralelo\s*20\d|fiestas\s+patrias|vacaciones|notas\s+finales|termino\s+de\s+(?:primer\s+)?semestre|feriado|holgura)\b",
+]
+
+
+def es_consulta_administrativa_o_planificacion(mensaje: str) -> bool:
+    """
+    Detecta consultas sobre el cronograma, fechas, evaluaciones o mapa de sesiones/experiencias
+    del curso, sin capturar preguntas puramente conceptuales o procedimentales técnicas.
+    """
+    texto = normalizar(mensaje)
+    if not texto:
+        return False
+    return any(re.search(patron, texto) for patron in _PATRONES_ADMIN_PLANIFICACION)

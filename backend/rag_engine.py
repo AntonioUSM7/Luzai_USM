@@ -500,6 +500,47 @@ def buscar_contexto_relevante(
     return formatear_contexto(fragmentos)
 
 
+def buscar_fragmentos_planificacion(
+    query: str,
+    codigo_ramo: str,
+    top_k: int = 6,
+    min_score: float = 0.28,
+) -> List[Dict[str, Any]]:
+    """
+    Recupera fragmentos priorizando documentos en Planificacion (incluyendo subcarpetas)
+    y faqs_jeff para responder consultas administrativas o de cronograma en modo informativo.
+    """
+    coleccion = obtener_cliente_chroma(codigo_ramo)
+    total = coleccion.count()
+    if total == 0 or not query.strip():
+        return []
+
+    # Recuperar candidatos globales y filtrar los pertenecientes a Planificacion/ o faqs_jeff
+    candidatos = buscar_fragmentos(query, codigo_ramo, top_k=min(max(top_k * 5, 25), total))
+    resultados: List[Dict[str, Any]] = []
+    vistos = set()
+
+    for frag in candidatos:
+        carpeta = (frag.get("carpeta") or "").strip()
+        es_plan = (
+            carpeta.lower() == "planificacion"
+            or carpeta.lower().startswith("planificacion/")
+            or carpeta == CARPETA_FAQS_JEFF
+        )
+        score = frag.get("score")
+        if not es_plan:
+            continue
+        if score is not None and score < min_score:
+            continue
+        clave = (frag.get("archivo"), frag.get("pagina"), (frag.get("texto") or "")[:80])
+        if clave not in vistos:
+            vistos.add(clave)
+            resultados.append(frag)
+
+    resultados.sort(key=lambda f: f.get("score") or 0.0, reverse=True)
+    return resultados[:top_k]
+
+
 CARPETA_FAQS_JEFF = "faqs_jeff"
 FUENTE_FAQS_JEFF = "Preguntas Guardadas (Jeff)"
 
@@ -625,7 +666,11 @@ def _reindexar_ramo(codigo_ramo: str) -> Dict[str, Any]:
 
     if dir_documentos.exists():
         for archivo in sorted(dir_documentos.rglob("*.pdf")):
-            carpeta = archivo.parent.name if archivo.parent != dir_documentos else "General"
+            carpeta = (
+                archivo.parent.relative_to(dir_documentos).as_posix()
+                if archivo.parent != dir_documentos
+                else "General"
+            )
             try:
                 resultado = indexar_documento(archivo, codigo, carpeta)
                 total_chunks += resultado.get("chunks_indexados", 0)

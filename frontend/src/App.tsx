@@ -47,14 +47,14 @@ export function App() {
         onCerrarSesion={() => setUsuario(null)}
       />
 
-      {/* Botón flotante redondo a la izquierda y al medio cuando la barra lateral está oculta */}
+      {/* Botón flotante a la izquierda cuando la barra lateral está oculta */}
       {!sidebarVisible && (
         <button
           onClick={() => setSidebarVisible(true)}
           title="Mostrar barra lateral"
-          className="fixed top-1/2 left-3 -translate-y-1/2 z-50 w-11 h-11 rounded-full bg-usm-blue text-white shadow-2xl border-2 border-white hover:bg-usm-dark hover:scale-110 active:scale-95 transition-all flex items-center justify-center group"
+          className="fixed top-1/2 left-3 -translate-y-1/2 z-50 w-9 h-9 rounded-sm bg-white text-[#1E4478] shadow-md border border-slate-300 hover:bg-[#1E4478] hover:text-white hover:border-[#1E4478] transition-all flex items-center justify-center group"
         >
-          <ChevronRight className="w-6 h-6 text-white group-hover:translate-x-0.5 transition-transform" />
+          <ChevronRight className="w-5 h-5 group-hover:translate-x-0.5 transition-transform" />
         </button>
       )}
 

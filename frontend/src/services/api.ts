@@ -87,6 +87,7 @@ export async function enviarMensajeChat(
               motivo: evento.motivo,
               topico: evento.topico,
               categoria: evento.categoria,
+              sugerencias: Array.isArray(evento.sugerencias) ? evento.sugerencias : undefined,
             });
           }
         } catch {
@@ -98,13 +99,20 @@ export async function enviarMensajeChat(
 }
 
 /**
- * Crea una nueva carpeta en el repositorio de documentos del ramo.
+ * Crea una nueva carpeta o subcarpeta en el repositorio de documentos del ramo.
  */
-export async function crearCarpetaRamo(codigoRamo: string, nombre: string): Promise<string> {
+export async function crearCarpetaRamo(
+  codigoRamo: string,
+  nombre: string,
+  carpetaPadre?: string | null
+): Promise<string> {
   const respuesta = await fetch(`${API_URL}/api/ramos/${codigoRamo}/carpetas`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ nombre }),
+    body: JSON.stringify({
+      nombre,
+      carpeta_padre: carpetaPadre || undefined,
+    }),
   });
 
   if (!respuesta.ok) {

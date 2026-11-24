@@ -59,6 +59,7 @@ class ConsultaChat(BaseModel):
 
 class CrearCarpetaReq(BaseModel):
     nombre: str
+    carpeta_padre: Optional[str] = None
 
 
 class CrearConsultaProfesorReq(BaseModel):
@@ -140,6 +141,31 @@ def formatear_tamano(tamano_bytes: int) -> str:
 CARPETAS_POR_DEFECTO = ["Clases", "Tareas", "Guias", "Certamenes"]
 
 
+def normalizar_ruta_carpeta(ruta: str) -> str:
+    """
+    Normaliza una ruta relativa de carpeta (ej. 'Certamenes/Certamen 1'),
+    evitando path traversal y segmentos inválidos.
+    """
+    if not ruta:
+        return ""
+    partes_raw = ruta.replace("\\", "/").split("/")
+    partes_limpias = []
+    for parte in partes_raw:
+        seg = parte.strip()
+        if not seg or seg in (".", "..") or seg.startswith("."):
+            continue
+        partes_limpias.append(seg)
+    return "/".join(partes_limpias)
+
+
+def resolver_ruta_segura(dir_base: Path, ruta_relativa: str) -> Path:
+    base_resuelta = dir_base.resolve()
+    destino = (base_resuelta / ruta_relativa).resolve()
+    if destino != base_resuelta and base_resuelta not in destino.parents:
+        raise HTTPException(status_code=400, detail="Ruta de carpeta inválida")
+    return destino
+
+
 def obtener_carpetas_ramo(codigo_ramo: str):
     dir_documentos = BASE_DATA_DIR / codigo_ramo.upper() / "documentos"
     dir_documentos.mkdir(parents=True, exist_ok=True)
@@ -149,35 +175,55 @@ def obtener_carpetas_ramo(codigo_ramo: str):
         (dir_documentos / def_folder).mkdir(parents=True, exist_ok=True)
 
     carpetas = []
-    for item in sorted(dir_documentos.iterdir()):
-        if item.is_dir() and not item.name.startswith("."):
-            carpetas.append(item.name)
+    for item in sorted(dir_documentos.rglob("*")):
+        if not item.is_dir():
+            continue
+        rel = item.relative_to(dir_documentos)
+        if any(parte.startswith(".") for parte in rel.parts):
+            continue
+        carpetas.append(rel.as_posix())
     return carpetas
 
 
 @app.get("/api/ramos/{codigo_ramo}/carpetas")
 def listar_carpetas(codigo_ramo: str):
-    """Devuelve la lista de carpetas disponibles para un ramo"""
+    """Devuelve la lista de carpetas y subcarpetas disponibles para un ramo"""
     carpetas = obtener_carpetas_ramo(codigo_ramo)
     return {"codigo_ramo": codigo_ramo.upper(), "carpetas": carpetas}
 
 
 @app.post("/api/ramos/{codigo_ramo}/carpetas")
 def crear_carpeta_ramo(codigo_ramo: str, datos: CrearCarpetaReq):
-    """Crea una nueva carpeta personalizada para el ramo"""
+    """Crea una nueva carpeta o subcarpeta personalizada para el ramo"""
     codigo = codigo_ramo.upper()
-    nombre_limpio = datos.nombre.strip().replace("/", "_").replace("\\", "_")
-    if not nombre_limpio:
+    dir_documentos = BASE_DATA_DIR / codigo / "documentos"
+    dir_documentos.mkdir(parents=True, exist_ok=True)
+
+    nombre_seg = normalizar_ruta_carpeta(datos.nombre)
+    if not nombre_seg:
         raise HTTPException(status_code=400, detail="El nombre de la carpeta no puede estar vacío")
 
-    dir_nueva = BASE_DATA_DIR / codigo / "documentos" / nombre_limpio
-    dir_nueva.mkdir(parents=True, exist_ok=True)
-    return {"status": "ok", "nombre": nombre_limpio, "mensaje": f"Carpeta '{nombre_limpio}' creada con éxito."}
+    padre_limpio = normalizar_ruta_carpeta(datos.carpeta_padre or "")
+    ruta_relativa = f"{padre_limpio}/{nombre_seg}" if padre_limpio else nombre_seg
+
+    dir_nueva = resolver_ruta_segura(dir_documentos, ruta_relativa)
+    try:
+        dir_nueva.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Sin permisos de escritura en '{padre_limpio or 'documentos'}'. Verifica el propietario de backend/data/ramos/{codigo}/documentos.",
+        )
+    return {
+        "status": "ok",
+        "nombre": ruta_relativa,
+        "mensaje": f"Carpeta '{ruta_relativa}' creada con éxito.",
+    }
 
 
 @app.get("/api/ramos/{codigo_ramo}/archivos")
 def listar_archivos_ramo(codigo_ramo: str):
-    """Lista todos los archivos organizados por carpeta para un ramo específico"""
+    """Lista todos los archivos organizados por carpeta/subcarpeta para un ramo específico"""
     codigo = codigo_ramo.upper()
     dir_documentos = BASE_DATA_DIR / codigo / "documentos"
     if not dir_documentos.exists():
@@ -189,9 +235,10 @@ def listar_archivos_ramo(codigo_ramo: str):
     # Recorrer subcarpetas y archivos
     for item in dir_documentos.rglob("*"):
         if item.is_file() and not item.name.startswith("."):
-            carpeta_padre = item.parent.name
-            if carpeta_padre == "documentos":
-                carpeta_padre = "General"
+            rel_parent = item.parent.relative_to(dir_documentos)
+            if any(parte.startswith(".") for parte in rel_parent.parts):
+                continue
+            carpeta_padre = "General" if rel_parent == Path(".") else rel_parent.as_posix()
 
             stats = item.stat()
             fecha_iso = datetime.fromtimestamp(stats.st_mtime).strftime("%d/%m/%Y %H:%M")
@@ -219,11 +266,12 @@ async def subir_archivo_ramo(
     archivo: UploadFile = File(...),
     carpeta: str = Form("Clases"),
 ):
-    """Sube un archivo a la carpeta seleccionada del ramo y lo indexa en background."""
+    """Sube un archivo a la carpeta o subcarpeta seleccionada del ramo y lo indexa en background."""
     codigo = codigo_ramo.upper()
-    carpeta_limpia = carpeta.strip().replace("/", "_").replace("\\", "_") or "General"
+    dir_documentos = BASE_DATA_DIR / codigo / "documentos"
+    carpeta_limpia = normalizar_ruta_carpeta(carpeta) or "General"
 
-    dir_destino = BASE_DATA_DIR / codigo / "documentos" / carpeta_limpia
+    dir_destino = resolver_ruta_segura(dir_documentos, carpeta_limpia)
     dir_destino.mkdir(parents=True, exist_ok=True)
 
     # Limpiar nombre del archivo
@@ -258,33 +306,69 @@ async def subir_archivo_ramo(
 
 @app.delete("/api/ramos/{codigo_ramo}/archivos")
 def eliminar_archivo_ramo(codigo_ramo: str, carpeta: str, nombre_archivo: str):
-    """Elimina un archivo de la carpeta de un ramo y sus vectores asociados"""
+    """Elimina un archivo de la carpeta/subcarpeta de un ramo y sus vectores asociados"""
     codigo = codigo_ramo.upper()
-    ruta_archivo = BASE_DATA_DIR / codigo / "documentos" / carpeta / nombre_archivo
+    dir_documentos = BASE_DATA_DIR / codigo / "documentos"
+    carpeta_limpia = normalizar_ruta_carpeta(carpeta)
+    nombre_seguro = Path(nombre_archivo).name
+    if not carpeta_limpia or not nombre_seguro:
+        raise HTTPException(status_code=400, detail="Ruta de archivo inválida")
+
+    dir_carpeta = resolver_ruta_segura(dir_documentos, carpeta_limpia)
+    ruta_archivo = dir_carpeta / nombre_seguro
     if not ruta_archivo.exists():
         raise HTTPException(status_code=404, detail="El archivo no existe")
 
     ruta_archivo.unlink()
-    rag_engine.eliminar_documento_vectorial(nombre_archivo, codigo, carpeta)
-    return {"status": "ok", "mensaje": f"Archivo '{nombre_archivo}' eliminado correctamente."}
+    rag_engine.eliminar_documento_vectorial(nombre_seguro, codigo, carpeta_limpia)
+    return {"status": "ok", "mensaje": f"Archivo '{nombre_seguro}' eliminado correctamente."}
 
 
 @app.delete("/api/ramos/{codigo_ramo}/carpetas")
 def eliminar_carpeta_ramo(codigo_ramo: str, nombre_carpeta: str):
-    """Elimina una carpeta, sus archivos y sus vectores asociados del ramo"""
+    """Elimina una carpeta (y sus subcarpetas), sus archivos y sus vectores asociados del ramo"""
     codigo = codigo_ramo.upper()
-    nombre_limpio = nombre_carpeta.strip().replace("/", "_").replace("\\", "_")
-    ruta_carpeta = BASE_DATA_DIR / codigo / "documentos" / nombre_limpio
+    dir_documentos = BASE_DATA_DIR / codigo / "documentos"
+    nombre_limpio = normalizar_ruta_carpeta(nombre_carpeta)
+    if not nombre_limpio:
+        raise HTTPException(status_code=400, detail="Nombre de carpeta inválido")
+
+    ruta_carpeta = resolver_ruta_segura(dir_documentos, nombre_limpio)
 
     if not ruta_carpeta.exists() or not ruta_carpeta.is_dir():
         raise HTTPException(status_code=404, detail="La carpeta no existe")
 
+    # Recolectar la carpeta y todas sus subcarpetas para limpiar vectores en RAG
+    carpetas_a_limpiar = [nombre_limpio]
+    for sub in ruta_carpeta.rglob("*"):
+        if sub.is_dir():
+            rel = sub.relative_to(dir_documentos).as_posix()
+            carpetas_a_limpiar.append(rel)
+
     shutil.rmtree(ruta_carpeta)
-    rag_engine.eliminar_carpeta_vectorial(codigo, nombre_limpio)
+    for carpeta_vec in carpetas_a_limpiar:
+        rag_engine.eliminar_carpeta_vectorial(codigo, carpeta_vec)
+
     return {
         "status": "ok",
         "mensaje": f"Carpeta '{nombre_limpio}' y sus archivos fueron eliminados correctamente.",
     }
+
+
+@app.get("/api/ramos/{codigo_ramo}/documentos/{ruta:path}")
+def ver_documento_ramo(codigo_ramo: str, ruta: str):
+    """Sirve un documento del ramo inline para que el alumno pueda abrirlo en el navegador."""
+    codigo = codigo_ramo.upper()
+    dir_documentos = BASE_DATA_DIR / codigo / "documentos"
+    ruta_limpia = normalizar_ruta_carpeta(ruta)
+    if not ruta_limpia:
+        raise HTTPException(status_code=400, detail="Ruta de documento inválida")
+
+    destino = resolver_ruta_segura(dir_documentos, ruta_limpia)
+    if not destino.exists() or not destino.is_file():
+        raise HTTPException(status_code=404, detail="Documento no encontrado")
+
+    return FileResponse(destino, content_disposition_type="inline")
 
 
 @app.post("/api/ramos/{codigo_ramo}/reindexar")
@@ -1000,6 +1084,23 @@ async def _eventos_ollama(
         }
 
 
+def _construir_prompt_informativo_planificacion(
+    datos_ramo: Dict[str, Any],
+    codigo: str,
+    contexto: str,
+) -> str:
+    nombre = datos_ramo.get("nombre", codigo)
+    return (
+        f"Eres el asistente administrativo oficial de {codigo} ({nombre}) en la Universidad Técnica Federico Santa María.\n"
+        "Responde en español de forma DIRECTA, CLARA y CONCISA a la consulta administrativa o de planificación del estudiante.\n"
+        "REGLAS ESTRICTAS:\n"
+        "- Entrega los datos exactos (fechas por paralelo 200/201, clase, tema, laboratorio y evaluación) usando ÚNICAMENTE la información del contexto.\n"
+        "- NO apliques estilo socrático ni hagas preguntas de vuelta para retener información administrativa.\n"
+        "- No inventes fechas ni contenidos que no aparezcan en el contexto. Si el dato no figura, indícalo brevemente.\n\n"
+        f"CONTEXTO DE PLANIFICACIÓN Y FAQS:\n{contexto}"
+    )
+
+
 @app.post("/api/chat")
 async def chat(consulta: ConsultaChat):
     """
@@ -1013,31 +1114,114 @@ async def chat(consulta: ConsultaChat):
     with open(ruta_config, "r", encoding="utf-8") as f:
         datos_ramo = json.load(f)
 
+    historial_limpio = _limpiar_historial(consulta.historial)
+
     # 1. Jeff responde dudas administrativas sin tocar la GPU.
-    jeff = router_jeff.resolver_consulta(consulta.mensaje, codigo)
+    jeff = router_jeff.resolver_consulta(consulta.mensaje, codigo, historial=historial_limpio)
     if jeff:
         async def generador_jeff():
             for fragmento in _fragmentos_token(jeff["respuesta"]):
                 yield _sse({"tipo": "token", "contenido": fragmento})
                 await asyncio.sleep(0.02)
-            yield _sse({
+            evento_fin: Dict[str, Any] = {
                 "tipo": "fin",
                 "canal": "JEFF_ADMIN",
                 "topico": jeff.get("topico"),
                 "categoria": jeff.get("categoria"),
-            })
+            }
+            if jeff.get("sugerencias"):
+                evento_fin["sugerencias"] = jeff["sugerencias"]
+            yield _sse(evento_fin)
 
         return StreamingResponse(generador_jeff(), media_type="text/event-stream")
 
     modo = router_modo.detectar_modo(consulta.mensaje)
     es_resumen = router_modo.es_solicitud_resumen(consulta.mensaje)
-    historial_limpio = _limpiar_historial(consulta.historial)
+    es_seguimiento_plan = (
+        bool(historial_limpio)
+        and len(consulta.mensaje.split()) <= 8
+        and (
+            "[Jeff - Planificación" in (
+                historial_limpio[-1].get("content") or historial_limpio[-1].get("contenido") or ""
+            )
+            or "Documento de planificación:" in (
+                historial_limpio[-1].get("content") or historial_limpio[-1].get("contenido") or ""
+            )
+        )
+        and not router_modo.es_saludo(consulta.mensaje)
+    )
+    es_admin_plan = router_modo.es_consulta_administrativa_o_planificacion(consulta.mensaje) or es_seguimiento_plan
     temario = _obtener_temario(codigo)
     consulta_contextual = _construir_consulta_contextual(
         consulta.mensaje, historial_limpio, temario
     )
 
-    # 2. RAG: recupera contexto de los apuntes (en hilo aparte para no bloquear el event loop).
+    # 2. RAG informativo para consultas administrativas / de planificación:
+    # busca en Planificacion/ + faqs_jeff y adjunta el enlace directo al documento original.
+    if es_admin_plan:
+        try:
+            fragmentos_plan = await asyncio.to_thread(
+                rag_engine.buscar_fragmentos_planificacion, consulta_contextual, codigo
+            )
+        except Exception as exc:
+            logger.error("Falló la recuperación RAG de planificación para %s: %s", codigo, exc)
+            fragmentos_plan = []
+
+        docs_plan = router_jeff.listar_documentos_planificacion(codigo)
+        contexto_plan = rag_engine.formatear_contexto(fragmentos_plan)
+
+        # Identificar enlaces relevantes (los documentos citados por RAG o todos los de Planificacion/)
+        archivos_citados = {f.get("archivo") for f in fragmentos_plan if f.get("archivo")}
+        docs_relevantes = [d for d in docs_plan if d["nombre"] in archivos_citados] or docs_plan
+
+        if contexto_plan:
+            logger.info("Chat %s canal RAG informativo de planificación (frags=%d)", codigo, len(fragmentos_plan))
+            system_prompt_plan = _construir_prompt_informativo_planificacion(
+                datos_ramo, codigo, contexto_plan
+            )
+            bloque_enlaces = ""
+            if docs_relevantes:
+                enlaces_md = " · ".join(
+                    f"[{d['etiqueta']} ({d['nombre']})]({d['url']})" for d in docs_relevantes
+                )
+                bloque_enlaces = f"\n\n---\nDocumento de planificación: {enlaces_md}"
+
+            async def generador_plan_rag():
+                yield _sse({
+                    "tipo": "inicio",
+                    "canal": "JEFF_ADMIN",
+                    "modo": "informativo",
+                    "con_contexto": True,
+                })
+                async for evento in _eventos_ollama(
+                    system_prompt_plan, consulta.mensaje, historial_limpio
+                ):
+                    yield _sse(evento)
+                if bloque_enlaces:
+                    yield _sse({"tipo": "token", "contenido": bloque_enlaces})
+                yield _sse({"tipo": "fin", "canal": "JEFF_ADMIN", "categoria": "Planificación del Curso"})
+
+            return StreamingResponse(generador_plan_rag(), media_type="text/event-stream")
+
+        if docs_plan:
+            enlaces_md = "\n".join(
+                f"- [{d['etiqueta']} ({d['nombre']})]({d['url']})" for d in docs_plan
+            )
+            texto_docs = (
+                f"[Jeff - Planificación {codigo}]: Puedes revisar la planificación oficial "
+                f"directamente en:\n\n{enlaces_md}"
+            )
+            return StreamingResponse(
+                _respuesta_fija(
+                    texto_docs,
+                    "informativo",
+                    False,
+                    canal="JEFF_ADMIN",
+                ),
+                media_type="text/event-stream",
+            )
+
+    # 2b. RAG general: recupera contexto de los apuntes (en hilo aparte para no bloquear el event loop).
     try:
         fragmentos = await asyncio.to_thread(
             rag_engine.buscar_fragmentos_relevantes, consulta_contextual, codigo

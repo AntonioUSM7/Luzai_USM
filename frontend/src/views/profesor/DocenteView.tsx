@@ -9,7 +9,9 @@ import {
 } from '../../types';
 import {
   ArrowLeft,
-  BookOpen,
+  ArrowRight,
+  ChevronDown,
+  ChevronRight,
   Folder,
   FolderOpen,
   FolderPlus,
@@ -23,13 +25,14 @@ import {
   BarChart3,
   X,
   Plus,
-  CornerDownRight,
+  MessageSquare,
   MessageSquareMore,
   Send,
   Save,
   Search,
   Pencil,
 } from 'lucide-react';
+import { ChatWindow } from '../alumno/ChatWindow';
 import {
   listarArchivosRamo,
   subirArchivoRamo,
@@ -58,7 +61,7 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
   onSeleccionarRamo,
 }) => {
   // Pestaña activa dentro del ramo
-  const [subTab, setSubTab] = useState<'archivos' | 'consultas' | 'jeff' | 'socratico' | 'analitica'>('archivos');
+  const [subTab, setSubTab] = useState<'archivos' | 'consultas' | 'jeff' | 'socratico' | 'probar_ia' | 'analitica'>('archivos');
 
   // Estado del buzón de consultas escaladas por alumnos
   const [consultas, setConsultas] = useState<ConsultaProfesor[]>([]);
@@ -95,10 +98,12 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
   const [archivos, setArchivos] = useState<ArchivoRecurso[]>([]);
   const [cargando, setCargando] = useState<boolean>(false);
 
-  // Estado de creación de carpeta
+  // Estado de creación de carpeta (soporta subcarpetas anidadas)
   const [mostrarCrearCarpeta, setMostrarCrearCarpeta] = useState<boolean>(false);
   const [nombreNuevaCarpeta, setNombreNuevaCarpeta] = useState<string>('');
+  const [carpetaPadreNueva, setCarpetaPadreNueva] = useState<string>('');
   const [creandoCarpeta, setCreandoCarpeta] = useState<boolean>(false);
+  const [carpetasExpandidas, setCarpetasExpandidas] = useState<Record<string, boolean>>({});
 
   // Estado de la ventana modal superpuesta para subir archivos
   const [modalSubirAbierto, setModalSubirAbierto] = useState<boolean>(false);
@@ -224,7 +229,7 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
   const abrirEditarFaq = (faq: FaqJeff) => {
     setFaqEditandoId(faq.id);
     setFaqPregunta(faq.pregunta || '');
-    setFaqRespuesta(faq.respuesta || '');
+    setFaqRespuesta((faq.respuesta || '').replace(/^📌\s*/, ''));
     setFaqCategoria(faq.categoria || 'Consultas Resueltas');
     setFaqPalabrasClave((faq.palabras_clave || []).join(', '));
     setMostrarFormFaq(true);
@@ -410,20 +415,47 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
     }
   };
 
-  // Crear nueva carpeta
+  // Crear nueva carpeta o subcarpeta
   const manejarCrearCarpeta = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!ramoActivo || !nombreNuevaCarpeta.trim()) return;
 
     setCreandoCarpeta(true);
     try {
-      const nombreCreado = await crearCarpetaRamo(ramoActivo.codigo, nombreNuevaCarpeta.trim());
-      setCarpetas((prev) => (prev.includes(nombreCreado) ? prev : [...prev, nombreCreado]));
-      setCarpetaDestinoSubida(nombreCreado);
-      setCarpetaSeleccionada(nombreCreado);
+      const rutaCreada = await crearCarpetaRamo(
+        ramoActivo.codigo,
+        nombreNuevaCarpeta.trim(),
+        carpetaPadreNueva || null
+      );
+      setCarpetas((prev) => {
+        // Asegurar que todos los ancestros existan en la lista ordenada
+        const conjunto = new Set(prev);
+        const partes = rutaCreada.split('/');
+        let acumulado = '';
+        for (const p of partes) {
+          acumulado = acumulado ? `${acumulado}/${p}` : p;
+          conjunto.add(acumulado);
+        }
+        return Array.from(conjunto).sort((a, b) => a.localeCompare(b));
+      });
+      // Expandir automáticamente todas las carpetas ancestras
+      const partesAncestros = rutaCreada.split('/').slice(0, -1);
+      if (partesAncestros.length > 0) {
+        setCarpetasExpandidas((prev) => {
+          const siguiente = { ...prev };
+          let acc = '';
+          for (const p of partesAncestros) {
+            acc = acc ? `${acc}/${p}` : p;
+            siguiente[acc] = true;
+          }
+          return siguiente;
+        });
+      }
+      setCarpetaDestinoSubida(rutaCreada);
+      setCarpetaSeleccionada(rutaCreada);
       setNombreNuevaCarpeta('');
       setMostrarCrearCarpeta(false);
-      mostrarMensaje('exito', `Carpeta "${nombreCreado}" creada con éxito.`);
+      mostrarMensaje('exito', `Carpeta "${rutaCreada.replace(/\//g, ' / ')}" creada con éxito.`);
     } catch {
       mostrarMensaje('error', 'No se pudo crear la carpeta.');
     } finally {
@@ -439,10 +471,16 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
     setSubiendoArchivo(true);
     try {
       const nuevo = await subirArchivoRamo(ramoActivo.codigo, archivoParaSubir, carpetaDestinoSubida);
-      setArchivos((prev) => [nuevo, ...prev.filter((a) => a.nombre !== nuevo.nombre)]);
+      setArchivos((prev) => [
+        nuevo,
+        ...prev.filter((a) => !(a.nombre === nuevo.nombre && a.carpeta === nuevo.carpeta)),
+      ]);
       setModalSubirAbierto(false);
       setArchivoParaSubir(null);
-      mostrarMensaje('exito', `Archivo "${nuevo.nombre}" subido a la carpeta "${carpetaDestinoSubida}".`);
+      mostrarMensaje(
+        'exito',
+        `Archivo "${nuevo.nombre}" subido a "${carpetaDestinoSubida.replace(/\//g, ' / ')}".`
+      );
     } catch {
       mostrarMensaje('error', 'Ocurrió un error al subir el archivo.');
     } finally {
@@ -453,7 +491,9 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
   // Eliminar archivo
   const manejarEliminarArchivo = async (archivo: ArchivoRecurso) => {
     if (!ramoActivo) return;
-    const seguro = window.confirm(`¿Estás seguro de eliminar el archivo "${archivo.nombre}" de la carpeta "${archivo.carpeta}"?`);
+    const seguro = window.confirm(
+      `¿Estás seguro de eliminar el archivo "${archivo.nombre}" de "${archivo.carpeta.replace(/\//g, ' / ')}"?`
+    );
     if (!seguro) return;
 
     try {
@@ -465,119 +505,409 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
     }
   };
 
-  // Eliminar carpeta completa
+  // Eliminar carpeta completa (incluyendo subcarpetas)
   const manejarEliminarCarpeta = async (e: React.MouseEvent, nombreCarpeta: string) => {
     e.stopPropagation();
     if (!ramoActivo) return;
 
-    const cantArchivos = archivos.filter((a) => a.carpeta === nombreCarpeta).length;
-    const mensaje =
-      cantArchivos > 0
-        ? `¿Estás seguro de eliminar la carpeta "${nombreCarpeta}" y sus ${cantArchivos} archivo(s)? Esta acción eliminará permanentemente los archivos del servidor.`
-        : `¿Estás seguro de eliminar la carpeta vacía "${nombreCarpeta}"?`;
+    const prefijo = `${nombreCarpeta}/`;
+    const cantArchivos = archivos.filter(
+      (a) => a.carpeta === nombreCarpeta || a.carpeta.startsWith(prefijo)
+    ).length;
+    const cantSubcarpetas = carpetas.filter((c) => c.startsWith(prefijo)).length;
+    const rutaLegible = nombreCarpeta.replace(/\//g, ' / ');
 
-    const seguro = window.confirm(mensaje);
+    const detalle =
+      cantArchivos > 0 || cantSubcarpetas > 0
+        ? `¿Estás seguro de eliminar "${rutaLegible}"${
+            cantSubcarpetas > 0 ? `, sus ${cantSubcarpetas} subcarpeta(s)` : ''
+          }${cantArchivos > 0 ? ` y ${cantArchivos} archivo(s)` : ''}? Esta acción es permanente.`
+        : `¿Estás seguro de eliminar la carpeta vacía "${rutaLegible}"?`;
+
+    const seguro = window.confirm(detalle);
     if (!seguro) return;
 
     try {
       await eliminarCarpetaRamo(ramoActivo.codigo, nombreCarpeta);
-      setCarpetas((prev) => prev.filter((c) => c !== nombreCarpeta));
-      setArchivos((prev) => prev.filter((a) => a.carpeta !== nombreCarpeta));
-      if (carpetaSeleccionada === nombreCarpeta) {
+      setCarpetas((prev) => prev.filter((c) => c !== nombreCarpeta && !c.startsWith(prefijo)));
+      setArchivos((prev) =>
+        prev.filter((a) => a.carpeta !== nombreCarpeta && !a.carpeta.startsWith(prefijo))
+      );
+      if (
+        carpetaSeleccionada === nombreCarpeta ||
+        (carpetaSeleccionada && carpetaSeleccionada.startsWith(prefijo))
+      ) {
         setCarpetaSeleccionada(null);
       }
-      mostrarMensaje('exito', `Carpeta "${nombreCarpeta}" eliminada correctamente.`);
+      mostrarMensaje('exito', `Carpeta "${rutaLegible}" eliminada correctamente.`);
     } catch {
       mostrarMensaje('error', 'No se pudo eliminar la carpeta.');
     }
   };
 
-  // Filtrado de archivos según carpeta seleccionada en el árbol
-  const archivosMostrados = archivos.filter((a) =>
-    carpetaSeleccionada === null ? true : a.carpeta === carpetaSeleccionada
-  );
+  // Filtrado de archivos según carpeta seleccionada (incluye subcarpetas hijas)
+  const archivosMostrados = archivos.filter((a) => {
+    if (carpetaSeleccionada === null) return true;
+    return a.carpeta === carpetaSeleccionada || a.carpeta.startsWith(`${carpetaSeleccionada}/`);
+  });
+
+  // Construcción de árbol jerárquico de carpetas/subcarpetas
+  interface NodoCarpeta {
+    nombre: string;
+    ruta: string;
+    hijos: NodoCarpeta[];
+  }
+
+  const arbolCarpetas = React.useMemo<NodoCarpeta[]>(() => {
+    const mapa = new Map<string, NodoCarpeta>();
+    const raices: NodoCarpeta[] = [];
+
+    for (const rutaCompleta of [...carpetas].sort((a, b) => a.localeCompare(b))) {
+      const partes = rutaCompleta.split('/').filter(Boolean);
+      let acumulado = '';
+      for (const parte of partes) {
+        const rutaPadre = acumulado;
+        acumulado = acumulado ? `${acumulado}/${parte}` : parte;
+        if (!mapa.has(acumulado)) {
+          const nodo: NodoCarpeta = { nombre: parte, ruta: acumulado, hijos: [] };
+          mapa.set(acumulado, nodo);
+          if (rutaPadre && mapa.has(rutaPadre)) {
+            mapa.get(rutaPadre)!.hijos.push(nodo);
+          } else if (!rutaPadre) {
+            raices.push(nodo);
+          }
+        }
+      }
+    }
+    return raices;
+  }, [carpetas]);
+
+  const abrirCrearSubcarpeta = (e: React.MouseEvent, rutaPadre: string) => {
+    e.stopPropagation();
+    setCarpetaPadreNueva(rutaPadre);
+    setMostrarCrearCarpeta(true);
+    setCarpetasExpandidas((prev) => ({ ...prev, [rutaPadre]: true }));
+  };
+
+  const toggleExpandirCarpeta = (e: React.MouseEvent, ruta: string) => {
+    e.stopPropagation();
+    setCarpetasExpandidas((prev) => ({ ...prev, [ruta]: !(prev[ruta] ?? true) }));
+  };
+
+  const renderizarNodosCarpeta = (nodos: NodoCarpeta[], nivel = 0): React.ReactNode => {
+    return nodos.map((nodo) => {
+      const activa = carpetaSeleccionada === nodo.ruta;
+      const tieneHijos = nodo.hijos.length > 0;
+      const expandida = carpetasExpandidas[nodo.ruta] ?? true;
+      const cantArchivos = archivos.filter(
+        (a) => a.carpeta === nodo.ruta || a.carpeta.startsWith(`${nodo.ruta}/`)
+      ).length;
+
+      return (
+        <div key={nodo.ruta} className="space-y-1">
+          <div className="relative flex items-center">
+            <div className="w-3 border-t border-slate-200 mr-1.5 shrink-0" />
+
+            <div
+              onClick={() => setCarpetaSeleccionada(nodo.ruta)}
+              className={`flex-1 flex items-center justify-between px-2 py-2 rounded-sm transition cursor-pointer group min-w-0 ${
+                activa
+                  ? 'bg-[#1B3E6E] text-white font-semibold'
+                  : 'text-slate-700 hover:bg-slate-50'
+              }`}
+            >
+              <div className="flex items-center gap-1.5 min-w-0">
+                {tieneHijos ? (
+                  <button
+                    type="button"
+                    onClick={(e) => toggleExpandirCarpeta(e, nodo.ruta)}
+                    className={`p-0.5 rounded-sm transition shrink-0 ${
+                      activa
+                        ? 'text-white/80 hover:bg-white/10'
+                        : 'text-slate-400 hover:text-slate-700 hover:bg-slate-200/60'
+                    }`}
+                    title={expandida ? 'Contraer' : 'Expandir'}
+                  >
+                    {expandida ? (
+                      <ChevronDown className="w-3.5 h-3.5" />
+                    ) : (
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    )}
+                  </button>
+                ) : (
+                  <span className="w-4 shrink-0" />
+                )}
+
+                {activa ? (
+                  <FolderOpen className="w-4 h-4 text-usm-gold shrink-0" />
+                ) : (
+                  <Folder className="w-4 h-4 text-slate-400 shrink-0" />
+                )}
+                <span className="truncate">{nodo.nombre}</span>
+              </div>
+
+              <div className="flex items-center gap-0.5 shrink-0 ml-1">
+                <span
+                  className={`text-[10px] px-1.5 py-0.5 rounded-sm ${
+                    activa ? 'bg-white/15 text-white' : 'bg-slate-100 text-slate-400'
+                  }`}
+                >
+                  {cantArchivos}
+                </span>
+
+                <button
+                  type="button"
+                  onClick={(e) => abrirCrearSubcarpeta(e, nodo.ruta)}
+                  title={`Crear subcarpeta dentro de "${nodo.nombre}"`}
+                  className={`p-1 rounded-sm opacity-0 group-hover:opacity-100 transition ${
+                    activa
+                      ? 'text-white/75 hover:text-white hover:bg-white/15'
+                      : 'text-slate-400 hover:text-[#234E86] hover:bg-blue-50'
+                  }`}
+                >
+                  <FolderPlus className="w-3.5 h-3.5" />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={(e) => manejarEliminarCarpeta(e, nodo.ruta)}
+                  title={`Eliminar carpeta "${nodo.nombre}"`}
+                  className={`p-1 rounded-sm opacity-0 group-hover:opacity-100 transition ${
+                    activa
+                      ? 'text-white/60 hover:text-red-300 hover:bg-white/10'
+                      : 'text-slate-400 hover:text-red-600 hover:bg-red-50'
+                  }`}
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {tieneHijos && expandida && (
+            <div className="pl-3 border-l border-slate-200 ml-5 space-y-1">
+              {renderizarNodosCarpeta(nodo.hijos, nivel + 1)}
+            </div>
+          )}
+        </div>
+      );
+    });
+  };
 
   // -------------------------------------------------------------
-  // VISTA 1: PÁGINA DE INICIO "MIS CURSOS" (GRID ESTILO AULA USM)
+  // VISTA 1: PÁGINA DE INICIO "MIS CURSOS"
   // -------------------------------------------------------------
   if (!ramoActivo) {
     return (
-      <main className="flex-1 p-8 bg-[#F4F6F9] overflow-y-auto">
-        <div className="max-w-6xl mx-auto space-y-6">
-          <div>
-            <h1 className="text-2xl font-bold text-slate-800">Mis cursos</h1>
-            <p className="text-xs text-slate-500 mt-1">
-              Selecciona una asignatura para acceder a su configuración de recursos, tutor socrático y enrutador.
-            </p>
-          </div>
+      <main className="flex-1 bg-white overflow-y-auto">
+        {/* Franja superior sutil en degradado armonizado con el Login */}
+        <div
+          aria-hidden="true"
+          className="h-1 w-full bg-gradient-to-r from-[#234E86] via-[#4378B8] to-[#83B7E8]"
+        />
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <div className="max-w-6xl mx-auto px-8 py-10 sm:px-12 space-y-10">
+          <header className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 pb-6 border-b border-slate-200">
+            <div>
+              <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.16em] text-[#3A70B2]">
+                Portal Académico · LuzIA
+              </span>
+              <h1 className="font-display text-3xl font-bold tracking-tight text-slate-950 mt-1">
+                Mis cursos
+              </h1>
+              <p className="text-sm text-slate-500 mt-1.5 max-w-2xl">
+                Selecciona una asignatura para gestionar sus recursos, consultas escaladas y configuración del tutor socrático.
+              </p>
+            </div>
+
+            <div className="font-mono text-[11px] uppercase tracking-[0.14em] text-slate-400">
+              {ramos.length} {ramos.length === 1 ? 'asignatura' : 'asignaturas'}
+            </div>
+          </header>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-7">
             {ramos.map((ramo, index) => {
               const categoria = obtenerCategoria(ramo);
-              const esPar = index % 2 === 0;
+              const esRedes =
+                ramo.codigo.toUpperCase().startsWith('TEL') ||
+                ramo.nombre.toLowerCase().includes('red');
+              const esMatematica = ramo.codigo.toUpperCase().startsWith('MAT');
+
+              const gradienteTarjeta = esRedes
+                ? 'from-[#1E4478] via-[#3469AD] to-[#6DA5DE]'
+                : esMatematica
+                ? 'from-[#28538A] via-[#477EC0] to-[#87BAE9]'
+                : index % 2 === 0
+                ? 'from-[#234E86] via-[#4378B8] to-[#83B7E8]'
+                : 'from-[#1B3E6E] via-[#3869A8] to-[#74A9DF]';
 
               return (
-                <div
+                <article
                   key={ramo.codigo}
                   onClick={() => onSeleccionarRamo(ramo)}
-                  className="group bg-white rounded-xl overflow-hidden border border-slate-200 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-200 cursor-pointer flex flex-col"
+                  className="group bg-white border border-slate-200 hover:border-[#3A70B2] rounded-sm overflow-hidden transition-all duration-200 cursor-pointer flex flex-col hover:shadow-[0_12px_30px_-14px_rgba(35,78,134,0.28)]"
                 >
+                  {/* Cabecera gráfica temática */}
                   <div
-                    className={`h-36 relative p-4 flex flex-col justify-between overflow-hidden ${
-                      esPar
-                        ? 'bg-gradient-to-br from-[#024075] via-[#05579e] to-[#0a72cc]'
-                        : 'bg-gradient-to-br from-[#00274c] via-[#0b3866] to-[#164e87]'
-                    }`}
+                    className={`h-40 relative p-5 flex flex-col justify-between overflow-hidden bg-gradient-to-br ${gradienteTarjeta}`}
                   >
-                    <div className="absolute inset-0 opacity-15 pointer-events-none">
-                      <svg width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
+                    {/* Arte vectorial temático por asignatura */}
+                    {esRedes ? (
+                      <svg
+                        aria-hidden="true"
+                        viewBox="0 0 360 160"
+                        preserveAspectRatio="xMidYMid slice"
+                        className="absolute inset-0 w-full h-full pointer-events-none"
+                      >
+                        {/* Retícula fina de fondo */}
                         <defs>
-                          <pattern id={`pattern-${ramo.codigo}`} width="40" height="40" patternUnits="userSpaceOnUse">
-                            <path d="M 40 0 L 0 40 M 0 0 L 40 40" fill="none" stroke="white" strokeWidth="1" />
-                            <circle cx="20" cy="20" r="3" fill="white" />
+                          <pattern
+                            id={`net-grid-${ramo.codigo}`}
+                            width="28"
+                            height="28"
+                            patternUnits="userSpaceOnUse"
+                          >
+                            <path
+                              d="M 28 0 L 0 0 0 28"
+                              fill="none"
+                              stroke="white"
+                              strokeOpacity="0.08"
+                              strokeWidth="1"
+                            />
                           </pattern>
                         </defs>
-                        <rect width="100%" height="100%" fill={`url(#pattern-${ramo.codigo})`} />
-                      </svg>
-                    </div>
+                        <rect width="360" height="160" fill={`url(#net-grid-${ramo.codigo})`} />
 
-                    <div className="relative z-10">
-                      <span className="text-[10px] font-bold tracking-wider px-2.5 py-1 rounded-md bg-slate-900/80 text-white uppercase backdrop-blur-sm shadow-sm">
+                        {/* Enlaces de topología de red */}
+                        <g stroke="white" strokeOpacity="0.32" strokeWidth="1.25" fill="none">
+                          <line x1="48" y1="118" x2="132" y2="82" />
+                          <line x1="132" y1="82" x2="222" y2="54" />
+                          <line x1="222" y1="54" x2="312" y2="38" />
+                          <line x1="132" y1="82" x2="210" y2="124" />
+                          <line x1="222" y1="54" x2="210" y2="124" />
+                          <line x1="210" y1="124" x2="306" y2="112" />
+                          <line x1="222" y1="54" x2="306" y2="112" strokeDasharray="4 4" strokeOpacity="0.45" />
+                          <line x1="76" y1="42" x2="132" y2="82" strokeDasharray="3 4" strokeOpacity="0.35" />
+                          <line x1="76" y1="42" x2="222" y2="54" strokeOpacity="0.2" />
+                        </g>
+
+                        {/* Anillos de señal en el nodo central (switch/router) */}
+                        <circle cx="222" cy="54" r="24" fill="none" stroke="white" strokeOpacity="0.14" strokeWidth="1" />
+                        <circle cx="222" cy="54" r="14" fill="none" stroke="white" strokeOpacity="0.24" strokeWidth="1" />
+
+                        {/* Nodos de red */}
+                        <circle cx="76" cy="42" r="3" fill="white" fillOpacity="0.55" />
+                        <circle cx="48" cy="118" r="3.5" fill="white" fillOpacity="0.6" />
+                        <circle cx="132" cy="82" r="5" fill="#1E4478" stroke="white" strokeWidth="1.8" />
+                        <circle cx="210" cy="124" r="4.5" fill="#2A5A98" stroke="white" strokeWidth="1.5" />
+                        <circle cx="312" cy="38" r="3.5" fill="white" fillOpacity="0.75" />
+                        <circle cx="306" cy="112" r="4" fill="#FFB000" fillOpacity="0.9" />
+
+                        {/* Nodo principal resaltado */}
+                        <circle cx="222" cy="54" r="6" fill="white" />
+                        <circle cx="222" cy="54" r="2.5" fill="#234E86" />
+
+                        {/* Paquete en tránsito */}
+                        <rect x="171" y="64" width="6" height="6" transform="rotate(-17 174 67)" fill="#FFB000" fillOpacity="0.85" />
+                      </svg>
+                    ) : esMatematica ? (
+                      <svg
+                        aria-hidden="true"
+                        viewBox="0 0 360 160"
+                        preserveAspectRatio="xMidYMid slice"
+                        className="absolute inset-0 w-full h-full pointer-events-none"
+                      >
+                        <defs>
+                          <pattern
+                            id={`math-grid-${ramo.codigo}`}
+                            width="32"
+                            height="32"
+                            patternUnits="userSpaceOnUse"
+                          >
+                            <path
+                              d="M 32 0 L 0 0 0 32"
+                              fill="none"
+                              stroke="white"
+                              strokeOpacity="0.09"
+                              strokeWidth="1"
+                            />
+                          </pattern>
+                        </defs>
+                        <rect width="360" height="160" fill={`url(#math-grid-${ramo.codigo})`} />
+                        <path
+                          d="M 0 115 Q 75 25, 165 88 T 360 55"
+                          fill="none"
+                          stroke="white"
+                          strokeOpacity="0.32"
+                          strokeWidth="1.75"
+                        />
+                        <path
+                          d="M 0 135 Q 110 75, 210 105 T 360 35"
+                          fill="none"
+                          stroke="white"
+                          strokeOpacity="0.16"
+                          strokeWidth="1.25"
+                          strokeDasharray="4 4"
+                        />
+                        <circle cx="165" cy="88" r="3.5" fill="#FFB000" fillOpacity="0.9" />
+                      </svg>
+                    ) : (
+                      <div
+                        aria-hidden="true"
+                        className="absolute inset-0 opacity-[0.14] pointer-events-none"
+                        style={{
+                          backgroundImage:
+                            'linear-gradient(to right, rgba(255, 255, 255, 0.45) 1px, transparent 1px), linear-gradient(to bottom, rgba(255, 255, 255, 0.45) 1px, transparent 1px)',
+                          backgroundSize: '36px 36px',
+                        }}
+                      />
+                    )}
+
+                    {/* Etiqueta superior limpia */}
+                    <div className="relative z-10 flex items-center justify-between">
+                      <span className="font-mono text-[10px] font-semibold tracking-[0.16em] text-white/85 uppercase">
                         {categoria}
                       </span>
+                      <span className="h-[2px] w-7 bg-usm-gold" />
                     </div>
 
-                    <div className="relative z-10 flex items-center justify-between">
-                      <span className="text-xs font-bold text-usm-gold bg-black/40 px-2 py-0.5 rounded backdrop-blur-sm">
+                    {/* Código y acción inferior sobre el degradado */}
+                    <div className="relative z-10 flex items-end justify-between">
+                      <span className="font-display text-2xl font-extrabold tracking-tight text-white leading-none">
                         {ramo.codigo}
                       </span>
-                      <span className="text-[11px] text-white/80 flex items-center gap-1 group-hover:text-white transition">
-                        Gestionar <span className="group-hover:translate-x-0.5 transition-transform">→</span>
+                      <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-white/85 flex items-center gap-1.5 group-hover:text-white transition">
+                        <span>Abrir</span>
+                        <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
                       </span>
                     </div>
                   </div>
 
-                  <div className="p-4 flex-1 flex flex-col justify-between space-y-4">
+                  {/* Cuerpo de la tarjeta */}
+                  <div className="p-5 flex-1 flex flex-col justify-between gap-5">
                     <div>
-                      <h2 className="text-xs font-bold text-slate-800 leading-snug line-clamp-2 uppercase group-hover:text-usm-blue transition-colors">
-                        (202602)({ramo.codigo}) {ramo.nombre}|Paralelos:200
+                      <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                        2026-2 · Paralelo 200
+                      </p>
+                      <h2 className="font-display text-base font-bold text-slate-900 leading-snug mt-1 group-hover:text-[#234E86] transition-colors">
+                        {ramo.nombre}
                       </h2>
-                      <p className="text-[11px] text-slate-500 mt-1 line-clamp-2">
+                      <p className="text-xs text-slate-500 mt-2 line-clamp-2 leading-relaxed">
                         {ramo.descripcion}
                       </p>
                     </div>
 
-                    <div className="pt-2 border-t border-slate-100">
-                      <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden mb-1">
-                        <div className="bg-emerald-500 h-full w-[25%] rounded-full" />
-                      </div>
-                      <div className="flex items-center justify-between text-[10px] text-slate-400">
-                        <span>Estado: Operativo</span>
-                        <span>{ramo.documentos.length} recursos RAG</span>
-                      </div>
+                    <div className="pt-3.5 border-t border-slate-100 flex items-center justify-between text-[11px]">
+                      <span className="flex items-center gap-1.5 text-slate-600 font-medium">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                        Operativo
+                      </span>
+                      <span className="font-mono text-slate-400">
+                        {ramo.documentos.length} recursos RAG
+                      </span>
                     </div>
                   </div>
-                </div>
+                </article>
               );
             })}
           </div>
@@ -590,193 +920,261 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
   // VISTA 2: ESPACIO DE TRABAJO DEL RAMO SELECCIONADO
   // -------------------------------------------------------------
   return (
-    <main className="flex-1 flex flex-col h-full bg-[#F4F6F9] overflow-hidden relative">
+    <main className="flex-1 flex flex-col h-full bg-[#FAFBFC] overflow-hidden relative">
+      {/* Franja superior en degradado */}
+      <div
+        aria-hidden="true"
+        className="h-1 w-full bg-gradient-to-r from-[#234E86] via-[#4378B8] to-[#83B7E8] shrink-0"
+      />
+
       {/* Cabecera del Ramo */}
-      <header className="bg-white border-b border-slate-200 px-8 py-4 flex items-center justify-between shadow-sm shrink-0">
-        <div className="flex items-center gap-4">
+      <header className="bg-white border-b border-slate-200 px-8 py-4 flex items-center justify-between shrink-0">
+        <div className="flex items-center gap-4 min-w-0">
           <button
             onClick={() => onSeleccionarRamo(null)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-semibold transition"
+            className="flex items-center gap-1.5 text-xs font-semibold text-slate-500 hover:text-[#234E86] transition shrink-0"
           >
-            <ArrowLeft className="w-4 h-4 text-usm-blue" />
-            <span>Volver a Mis cursos</span>
+            <ArrowLeft className="w-4 h-4" />
+            <span>Mis cursos</span>
           </button>
 
-          <div className="h-5 w-px bg-slate-200" />
+          <div className="h-5 w-px bg-slate-200 shrink-0" />
 
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-bold px-2 py-0.5 rounded bg-usm-blue text-white">
+          <div className="flex items-center gap-3 min-w-0">
+            <span className="font-mono text-[11px] font-bold px-2.5 py-0.5 rounded-sm bg-[#234E86] text-white tracking-wider shrink-0">
               {ramoActivo.codigo}
             </span>
-            <h1 className="text-base font-bold text-slate-800">{ramoActivo.nombre}</h1>
+            <h1 className="font-display text-base font-bold text-slate-950 truncate">
+              {ramoActivo.nombre}
+            </h1>
           </div>
         </div>
 
-        <span className="text-xs text-slate-500 hidden sm:inline">
+        <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-slate-400 hidden sm:inline shrink-0">
           {ramoActivo.departamento}
         </span>
       </header>
 
-      {/* Sub-Pestañas del Ramo */}
-      <div className="bg-white border-b border-slate-200 px-8 flex gap-6 shrink-0 shadow-sm">
+      {/* Sub-Pestañas del Ramo (estilo minimalista con barra inferior en degradado) */}
+      <nav className="bg-white border-b border-slate-200 px-8 flex gap-7 shrink-0 overflow-x-auto">
         <button
           onClick={() => setSubTab('archivos')}
-          className={`py-3 text-xs font-bold border-b-2 flex items-center gap-2 transition ${
+          className={`relative py-3.5 text-xs font-semibold flex items-center gap-2 transition whitespace-nowrap ${
             subTab === 'archivos'
-              ? 'border-usm-blue text-usm-blue'
-              : 'border-transparent text-slate-500 hover:text-slate-800'
+              ? 'text-[#234E86]'
+              : 'text-slate-500 hover:text-slate-900'
           }`}
         >
           <Folder className="w-4 h-4" />
           <span>Archivos del curso</span>
-          <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-100 text-slate-600 font-normal">
+          <span className="font-mono text-[10px] px-1.5 py-0.5 bg-slate-100 text-slate-600 rounded-sm">
             {archivos.length}
           </span>
+          {subTab === 'archivos' && (
+            <span className="absolute bottom-0 left-0 right-0 h-[2.5px] bg-gradient-to-r from-[#234E86] to-[#5B97D4]" />
+          )}
         </button>
 
         <button
           onClick={() => setSubTab('consultas')}
-          className={`py-3 text-xs font-bold border-b-2 flex items-center gap-2 transition ${
+          className={`relative py-3.5 text-xs font-semibold flex items-center gap-2 transition whitespace-nowrap ${
             subTab === 'consultas'
-              ? 'border-usm-blue text-usm-blue'
-              : 'border-transparent text-slate-500 hover:text-slate-800'
+              ? 'text-[#234E86]'
+              : 'text-slate-500 hover:text-slate-900'
           }`}
         >
           <MessageSquareMore className="w-4 h-4" />
           <span>Consultas de Alumnos</span>
           {consultas.filter((c) => c.estado === 'pendiente').length > 0 && (
-            <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-amber-100 text-amber-800 font-bold">
+            <span className="font-mono text-[10px] px-1.5 py-0.5 bg-amber-100 text-amber-800 font-bold rounded-sm">
               {consultas.filter((c) => c.estado === 'pendiente').length}
             </span>
+          )}
+          {subTab === 'consultas' && (
+            <span className="absolute bottom-0 left-0 right-0 h-[2.5px] bg-gradient-to-r from-[#234E86] to-[#5B97D4]" />
           )}
         </button>
 
         <button
           onClick={() => setSubTab('jeff')}
-          className={`py-3 text-xs font-bold border-b-2 flex items-center gap-2 transition ${
+          className={`relative py-3.5 text-xs font-semibold flex items-center gap-2 transition whitespace-nowrap ${
             subTab === 'jeff'
-              ? 'border-usm-blue text-usm-blue'
-              : 'border-transparent text-slate-500 hover:text-slate-800'
+              ? 'text-[#234E86]'
+              : 'text-slate-500 hover:text-slate-900'
           }`}
         >
           <Bot className="w-4 h-4" />
           <span>Preguntas Guardadas (Jeff)</span>
           {faqsJeff.length > 0 && (
-            <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-blue-50 text-usm-blue font-bold">
+            <span className="font-mono text-[10px] px-1.5 py-0.5 bg-blue-50 text-[#234E86] font-bold rounded-sm">
               {faqsJeff.length}
             </span>
+          )}
+          {subTab === 'jeff' && (
+            <span className="absolute bottom-0 left-0 right-0 h-[2.5px] bg-gradient-to-r from-[#234E86] to-[#5B97D4]" />
           )}
         </button>
 
         <button
           onClick={() => setSubTab('socratico')}
-          className={`py-3 text-xs font-bold border-b-2 flex items-center gap-2 transition ${
+          className={`relative py-3.5 text-xs font-semibold flex items-center gap-2 transition whitespace-nowrap ${
             subTab === 'socratico'
-              ? 'border-usm-blue text-usm-blue'
-              : 'border-transparent text-slate-500 hover:text-slate-800'
+              ? 'text-[#234E86]'
+              : 'text-slate-500 hover:text-slate-900'
           }`}
         >
           <Sparkles className="w-4 h-4" />
           <span>Reglas Socráticas</span>
+          {subTab === 'socratico' && (
+            <span className="absolute bottom-0 left-0 right-0 h-[2.5px] bg-gradient-to-r from-[#234E86] to-[#5B97D4]" />
+          )}
+        </button>
+
+        <button
+          onClick={() => setSubTab('probar_ia')}
+          className={`relative py-3.5 text-xs font-semibold flex items-center gap-2 transition whitespace-nowrap ${
+            subTab === 'probar_ia'
+              ? 'text-[#234E86]'
+              : 'text-slate-500 hover:text-slate-900'
+          }`}
+        >
+          <MessageSquare className="w-4 h-4" />
+          <span>Probar Tutor IA</span>
+          {subTab === 'probar_ia' && (
+            <span className="absolute bottom-0 left-0 right-0 h-[2.5px] bg-gradient-to-r from-[#234E86] to-[#5B97D4]" />
+          )}
         </button>
 
         <button
           onClick={() => setSubTab('analitica')}
-          className={`py-3 text-xs font-bold border-b-2 flex items-center gap-2 transition ${
+          className={`relative py-3.5 text-xs font-semibold flex items-center gap-2 transition whitespace-nowrap ${
             subTab === 'analitica'
-              ? 'border-usm-blue text-usm-blue'
-              : 'border-transparent text-slate-500 hover:text-slate-800'
+              ? 'text-[#234E86]'
+              : 'text-slate-500 hover:text-slate-900'
           }`}
         >
           <BarChart3 className="w-4 h-4" />
           <span>Analítica Anónima</span>
+          {subTab === 'analitica' && (
+            <span className="absolute bottom-0 left-0 right-0 h-[2.5px] bg-gradient-to-r from-[#234E86] to-[#5B97D4]" />
+          )}
         </button>
-      </div>
+      </nav>
 
       {/* Notificación flotante */}
       {notificacion && (
         <div
-          className={`fixed bottom-6 right-6 z-50 px-4 py-3 rounded-xl shadow-xl text-xs font-semibold flex items-center gap-2 border transition-all ${
+          className={`fixed bottom-6 right-6 z-50 px-4 py-3 rounded-sm shadow-lg text-xs font-semibold flex items-center gap-2.5 border-l-4 bg-white transition-all ${
             notificacion.tipo === 'exito'
-              ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
-              : 'bg-red-50 text-red-800 border-red-200'
+              ? 'text-slate-800 border-l-emerald-500 border border-slate-200'
+              : 'text-slate-800 border-l-red-500 border border-slate-200'
           }`}
         >
           {notificacion.tipo === 'exito' ? (
-            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
           ) : (
-            <X className="w-4 h-4 text-red-600" />
+            <X className="w-4 h-4 text-red-600 shrink-0" />
           )}
           <span>{notificacion.texto}</span>
         </div>
       )}
 
       {/* Contenido Principal */}
+      {subTab === 'probar_ia' ? (
+        <div className="flex-1 flex flex-col overflow-hidden">
+          <ChatWindow ramo={ramoActivo} modoEmbebido />
+        </div>
+      ) : (
       <div className="flex-1 p-8 overflow-y-auto">
         <div className="max-w-6xl mx-auto space-y-6">
           {/* ======================================================== */}
           {/* SUB-PESTAÑA 1: EXPLORADOR DE CARPETAS Y ARCHIVOS DEL CURSO */}
           {/* ======================================================== */}
           {subTab === 'archivos' && (
-            <div className="space-y-4">
-              {/* Barra Superior con botón para Subir Archivos */}
-              <div className="flex items-center justify-between bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+            <div className="space-y-6">
+              {/* Barra Superior */}
+              <div className="flex flex-wrap items-center justify-between gap-4 pb-5 border-b border-slate-200">
                 <div>
-                  <h2 className="text-sm font-bold text-slate-800">
-                    Estructura y Archivos de {ramoActivo.codigo}
+                  <h2 className="font-display text-lg font-bold text-slate-950">
+                    Estructura y archivos de {ramoActivo.codigo}
                   </h2>
-                  <p className="text-xs text-slate-500">
+                  <p className="text-xs text-slate-500 mt-0.5">
                     Navega por las carpetas del ramo o crea nuevas divisiones temáticas.
                   </p>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2.5">
                   <button
-                    onClick={() => setMostrarCrearCarpeta((prev) => !prev)}
-                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-semibold transition"
+                    onClick={() => {
+                      setCarpetaPadreNueva(carpetaSeleccionada || '');
+                      setMostrarCrearCarpeta((prev) => !prev);
+                    }}
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-sm border border-slate-300 bg-white hover:border-[#234E86] hover:text-[#234E86] text-slate-700 text-xs font-semibold transition"
                   >
-                    <FolderPlus className="w-4 h-4 text-usm-blue" />
-                    <span>Nueva Carpeta</span>
+                    <FolderPlus className="w-4 h-4" />
+                    <span>Nueva carpeta</span>
                   </button>
 
                   <button
-                    onClick={() => setModalSubirAbierto(true)}
-                    className="flex items-center gap-2 px-4 py-2 rounded-xl bg-usm-blue hover:bg-usm-dark text-white text-xs font-bold shadow-md hover:shadow-lg transition active:scale-[0.99]"
+                    onClick={() => {
+                      if (carpetaSeleccionada) setCarpetaDestinoSubida(carpetaSeleccionada);
+                      setModalSubirAbierto(true);
+                    }}
+                    className="flex items-center gap-2 px-4 py-2 rounded-sm bg-gradient-to-r from-[#1E4478] to-[#2B5D9E] hover:brightness-105 text-white font-display text-xs font-semibold transition active:scale-[0.99]"
                   >
-                    <UploadCloud className="w-4 h-4 text-usm-gold" />
-                    <span>Subir Archivo</span>
+                    <UploadCloud className="w-4 h-4" />
+                    <span>Subir archivo</span>
                   </button>
                 </div>
               </div>
 
-              {/* Formulario rápido para crear nueva carpeta */}
+              {/* Formulario rápido para crear nueva carpeta o subcarpeta */}
               {mostrarCrearCarpeta && (
                 <form
                   onSubmit={manejarCrearCarpeta}
-                  className="bg-blue-50/60 p-4 rounded-2xl border border-blue-200/80 flex items-center gap-3 animate-fadeIn"
+                  className="bg-white p-4 rounded-sm border-l-2 border-l-[#234E86] border border-slate-200 flex flex-wrap items-center gap-3"
                 >
-                  <FolderPlus className="w-5 h-5 text-usm-blue shrink-0" />
-                  <div className="flex-1">
+                  <FolderPlus className="w-4 h-4 text-[#234E86] shrink-0" />
+                  <div className="w-full sm:w-56">
+                    <select
+                      value={carpetaPadreNueva}
+                      onChange={(e) => setCarpetaPadreNueva(e.target.value)}
+                      className="w-full text-xs bg-slate-50/70 border-b-2 border-slate-200 px-2.5 py-2 text-slate-700 font-mono focus:outline-none focus:border-[#234E86] focus:bg-white rounded-none transition-colors"
+                      title="Ubicación de la nueva carpeta"
+                    >
+                      <option value="">Raíz (Carpeta_{ramoActivo.codigo})</option>
+                      {carpetas.map((c) => (
+                        <option key={c} value={c}>
+                          {c.replace(/\//g, ' / ')}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex-1 min-w-[200px]">
                     <input
                       type="text"
-                      placeholder="Nombre de la nueva carpeta (ej. Laboratorios, Seminarios, etc.)"
+                      placeholder={
+                        carpetaPadreNueva
+                          ? `Nombre de subcarpeta dentro de ${carpetaPadreNueva.replace(/\//g, ' / ')} (ej. Certamen 1)`
+                          : 'Nombre de la nueva carpeta (ej. Laboratorios, Certamen 1)'
+                      }
                       value={nombreNuevaCarpeta}
                       onChange={(e) => setNombreNuevaCarpeta(e.target.value)}
-                      className="w-full text-xs bg-white border border-slate-200 rounded-xl px-3 py-2 text-slate-800 focus:outline-none focus:ring-1 focus:ring-usm-blue"
+                      className="w-full text-xs bg-slate-50/70 border-b-2 border-slate-200 px-3 py-2 text-slate-900 focus:outline-none focus:border-[#234E86] focus:bg-white rounded-none transition-colors"
                       autoFocus
                     />
                   </div>
                   <button
                     type="submit"
                     disabled={creandoCarpeta || !nombreNuevaCarpeta.trim()}
-                    className="px-4 py-2 rounded-xl bg-usm-blue text-white text-xs font-bold hover:bg-usm-dark disabled:opacity-50 transition"
+                    className="px-4 py-2 rounded-sm bg-[#234E86] text-white text-xs font-semibold hover:bg-[#1B3E6E] disabled:opacity-50 transition"
                   >
-                    {creandoCarpeta ? 'Creando...' : 'Crear Carpeta'}
+                    {creandoCarpeta ? 'Creando...' : 'Crear carpeta'}
                   </button>
                   <button
                     type="button"
                     onClick={() => setMostrarCrearCarpeta(false)}
-                    className="p-2 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-white/50"
+                    className="p-2 text-slate-400 hover:text-slate-700 transition"
                   >
                     <X className="w-4 h-4" />
                   </button>
@@ -785,15 +1183,13 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
 
               {/* Layout Dividido: Árbol de Carpetas (Izquierda) + Archivos (Derecha) */}
               <div className="grid grid-cols-1 md:grid-cols-12 gap-6 items-start">
-                {/* ------------------------------------------------ */}
-                {/* ÁRBOL DE CARPETAS CON RAMAS TRADICIONALES */}
-                {/* ------------------------------------------------ */}
-                <div className="md:col-span-4 bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-3 font-mono text-xs">
-                  <div className="flex items-center justify-between pb-2 border-b border-slate-100 font-sans">
-                    <span className="text-[11px] uppercase tracking-wider text-slate-500 font-bold">
-                      Árbol de Directorios
+                {/* ÁRBOL DE CARPETAS */}
+                <div className="md:col-span-4 bg-white rounded-sm border border-slate-200 p-5 space-y-3 font-mono text-xs">
+                  <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                    <span className="text-[11px] uppercase tracking-[0.14em] text-slate-500 font-semibold">
+                      Directorios
                     </span>
-                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-medium">
+                    <span className="text-[10px] text-slate-400">
                       {carpetas.length} carpetas
                     </span>
                   </div>
@@ -801,94 +1197,43 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                   {/* Nodo Raíz: Carpeta_{CODIGO} */}
                   <div
                     onClick={() => setCarpetaSeleccionada(null)}
-                    className={`flex items-center gap-2 p-2 rounded-xl cursor-pointer transition ${
+                    className={`flex items-center gap-2 px-2.5 py-2 rounded-sm cursor-pointer transition ${
                       carpetaSeleccionada === null
-                        ? 'bg-usm-blue text-white font-bold shadow-sm'
+                        ? 'bg-[#234E86] text-white font-semibold'
                         : 'text-slate-800 hover:bg-slate-50'
                     }`}
                   >
-                    <Folder className={`w-4 h-4 ${carpetaSeleccionada === null ? 'text-usm-gold' : 'text-usm-blue'}`} />
+                    <Folder className={`w-4 h-4 ${carpetaSeleccionada === null ? 'text-usm-gold' : 'text-[#3A70B2]'}`} />
                     <span className="truncate">Carpeta_{ramoActivo.codigo}</span>
-                    <span className={`ml-auto text-[10px] px-1.5 py-0.2 rounded-full ${carpetaSeleccionada === null ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                    <span className={`ml-auto text-[10px] px-1.5 py-0.5 rounded-sm ${carpetaSeleccionada === null ? 'bg-white/15 text-white' : 'bg-slate-100 text-slate-500'}`}>
                       {archivos.length}
                     </span>
                   </div>
 
-                  {/* Ramas Tradicionales */}
-                  <div className="pl-3 border-l-2 border-slate-200 ml-3 space-y-1">
-                    {carpetas.map((cat, idx) => {
-                      const esUltimo = idx === carpetas.length - 1;
-                      const activa = carpetaSeleccionada === cat;
-                      const cantArchivos = archivos.filter((a) => a.carpeta === cat).length;
-
-                      return (
-                        <div key={cat} className="relative flex items-center">
-                          {/* Línea horizontal de rama |-- */}
-                          <div className="w-3 border-t-2 border-slate-200 mr-1.5 shrink-0" />
-
-                          <div
-                            onClick={() => setCarpetaSeleccionada(cat)}
-                            className={`flex-1 flex items-center justify-between p-2 rounded-xl transition cursor-pointer group ${
-                              activa
-                                ? 'bg-usm-dark text-white font-bold shadow-sm'
-                                : 'text-slate-700 hover:bg-slate-50'
-                            }`}
-                          >
-                            <div className="flex items-center gap-1.5 min-w-0">
-                              {activa ? (
-                                <FolderOpen className="w-4 h-4 text-usm-gold shrink-0" />
-                              ) : (
-                                <Folder className="w-4 h-4 text-slate-400 shrink-0" />
-                              )}
-                              <span className="truncate">{cat}</span>
-                            </div>
-
-                            <div className="flex items-center gap-1 shrink-0">
-                              <span
-                                className={`text-[10px] px-1.5 py-0.2 rounded-full font-sans ${
-                                  activa ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-400'
-                                }`}
-                              >
-                                {cantArchivos}
-                              </span>
-
-                              <button
-                                onClick={(e) => manejarEliminarCarpeta(e, cat)}
-                                title={`Eliminar carpeta "${cat}"`}
-                                className={`p-1 rounded-md opacity-0 group-hover:opacity-100 transition ${
-                                  activa
-                                    ? 'text-white/60 hover:text-red-300 hover:bg-white/10'
-                                    : 'text-slate-400 hover:text-red-600 hover:bg-red-50'
-                                }`}
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
+                  {/* Ramas Recursivas de Carpetas y Subcarpetas */}
+                  <div className="pl-3 border-l border-slate-200 ml-3 space-y-1">
+                    {renderizarNodosCarpeta(arbolCarpetas)}
                   </div>
                 </div>
 
-                {/* ------------------------------------------------ */}
                 {/* EXPLORADOR DE ARCHIVOS DE LA CARPETA SELECCIONADA */}
-                {/* ------------------------------------------------ */}
-                <div className="md:col-span-8 bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                <div className="md:col-span-8 bg-white rounded-sm border border-slate-200 overflow-hidden">
                   {/* Encabezado del explorador */}
-                  <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/70">
+                  <div className="px-5 py-3.5 border-b border-slate-200 flex items-center justify-between bg-slate-50/50">
                     <div className="flex items-center gap-2 text-xs">
-                      <span className="text-slate-400">Ruta:</span>
-                      <span className="font-mono text-slate-600 font-semibold">
+                      <span className="font-mono text-[10px] uppercase tracking-wider text-slate-400">Ruta</span>
+                      <span className="font-mono text-slate-600 font-medium">
                         Carpeta_{ramoActivo.codigo} /
                       </span>
-                      <span className="font-mono text-usm-blue font-bold">
-                        {carpetaSeleccionada || 'Todas las carpetas'}
+                      <span className="font-mono text-[#234E86] font-bold">
+                        {carpetaSeleccionada
+                          ? carpetaSeleccionada.replace(/\//g, ' / ')
+                          : 'Todas las carpetas'}
                       </span>
                     </div>
 
                     <div className="flex items-center gap-3">
-                      <span className="text-xs text-slate-400">
+                      <span className="font-mono text-[11px] text-slate-400">
                         {archivosMostrados.length} archivo(s)
                       </span>
 
@@ -896,10 +1241,10 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                         <button
                           onClick={(e) => manejarEliminarCarpeta(e, carpetaSeleccionada)}
                           title={`Eliminar carpeta "${carpetaSeleccionada}"`}
-                          className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold text-red-600 hover:bg-red-50 border border-red-200 transition"
+                          className="flex items-center gap-1.5 px-2.5 py-1 rounded-sm text-xs font-semibold text-red-600 hover:bg-red-50 border border-red-200 transition"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
-                          <span>Eliminar Carpeta</span>
+                          <span>Eliminar carpeta</span>
                         </button>
                       )}
                     </div>
@@ -911,23 +1256,23 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                     </div>
                   ) : archivosMostrados.length === 0 ? (
                     <div className="p-12 text-center space-y-3">
-                      <FolderOpen className="w-10 h-10 text-slate-300 mx-auto" />
-                      <p className="text-sm font-semibold text-slate-700">
+                      <FolderOpen className="w-9 h-9 text-slate-300 mx-auto" />
+                      <p className="font-display text-sm font-semibold text-slate-800">
                         {carpetaSeleccionada
                           ? `No hay archivos en la carpeta "${carpetaSeleccionada}"`
                           : 'No hay archivos en este curso aún'}
                       </p>
                       <p className="text-xs text-slate-400 max-w-sm mx-auto">
-                        Presiona el botón "Subir Archivo" para cargar PDFs y asignarlos a esta u otra carpeta.
+                        Presiona el botón "Subir archivo" para cargar documentos y asignarlos a esta u otra carpeta.
                       </p>
                       <button
                         onClick={() => {
                           if (carpetaSeleccionada) setCarpetaDestinoSubida(carpetaSeleccionada);
                           setModalSubirAbierto(true);
                         }}
-                        className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-usm-blue text-white text-xs font-semibold hover:bg-usm-dark transition shadow-sm"
+                        className="inline-flex items-center gap-2 px-4 py-2 rounded-sm bg-gradient-to-r from-[#1E4478] to-[#2B5D9E] text-white text-xs font-semibold hover:brightness-105 transition"
                       >
-                        <UploadCloud className="w-4 h-4 text-usm-gold" />
+                        <UploadCloud className="w-4 h-4" />
                         <span>Subir archivo aquí</span>
                       </button>
                     </div>
@@ -935,25 +1280,26 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                     <ul className="divide-y divide-slate-100">
                       {archivosMostrados.map((archivo) => (
                         <li
-                          key={archivo.nombre}
-                          className="p-4 flex items-center justify-between hover:bg-slate-50/70 transition"
+                          key={`${archivo.carpeta}/${archivo.nombre}`}
+                          className="px-5 py-4 flex items-center justify-between hover:bg-slate-50/70 transition"
                         >
-                          <div className="flex items-center gap-3 min-w-0">
-                            <div className="w-10 h-10 rounded-xl bg-red-50 text-red-600 flex items-center justify-center shrink-0 border border-red-100">
-                              <FileText className="w-5 h-5" />
+                          <div className="flex items-center gap-3.5 min-w-0">
+                            <div className="w-9 h-9 rounded-sm bg-slate-50 text-[#234E86] flex items-center justify-center shrink-0 border border-slate-200">
+                              <FileText className="w-4 h-4" />
                             </div>
                             <div className="min-w-0">
-                              <p className="text-xs font-bold text-slate-800 truncate">
+                              <p className="text-xs font-semibold text-slate-900 truncate">
                                 {archivo.nombre}
                               </p>
-                              <div className="flex items-center gap-2 text-[11px] text-slate-400 mt-0.5">
-                                <span className="font-mono text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded">
-                                  📁 {archivo.carpeta}
+                              <div className="flex items-center gap-2 text-[11px] text-slate-400 mt-1">
+                                <span className="inline-flex items-center gap-1 font-mono text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-sm">
+                                  <Folder className="w-3 h-3 text-slate-400" />
+                                  {archivo.carpeta.replace(/\//g, ' / ')}
                                 </span>
                                 <span>·</span>
-                                <span>{archivo.tamano_legible}</span>
+                                <span className="font-mono text-[10px]">{archivo.tamano_legible}</span>
                                 <span>·</span>
-                                <span className="flex items-center gap-1">
+                                <span className="flex items-center gap-1 font-mono text-[10px]">
                                   <Clock className="w-3 h-3" />
                                   {archivo.fecha_modificacion}
                                 </span>
@@ -962,15 +1308,15 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                           </div>
 
                           <div className="flex items-center gap-3 shrink-0">
-                            <span className="hidden sm:inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
+                            <span className="hidden sm:inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-sm">
                               <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                              Indexado en RAG
+                              Indexado RAG
                             </span>
 
                             <button
                               onClick={() => manejarEliminarArchivo(archivo)}
                               title="Eliminar archivo"
-                              className="p-2 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 transition"
+                              className="p-2 rounded-sm text-slate-400 hover:text-red-600 hover:bg-red-50 transition"
                             >
                               <Trash2 className="w-4 h-4" />
                             </button>
@@ -986,36 +1332,39 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
 
           {/* BUZÓN DE CONSULTAS ESCALADAS AL PROFESOR */}
           {subTab === 'consultas' && (
-            <div className="space-y-4">
-              <div className="bg-white p-5 rounded-2xl border border-slate-200 flex flex-wrap items-center justify-between gap-3">
+            <div className="space-y-6">
+              <div className="pb-5 border-b border-slate-200 flex flex-wrap items-end justify-between gap-4">
                 <div>
-                  <h3 className="text-sm font-bold text-slate-800">
-                    Buzón de Consultas Escaladas ({ramoActivo.codigo})
+                  <h3 className="font-display text-lg font-bold text-slate-950">
+                    Buzón de consultas escaladas ({ramoActivo.codigo})
                   </h3>
-                  <p className="text-xs text-slate-500 mt-0.5">
+                  <p className="text-xs text-slate-500 mt-0.5 max-w-2xl">
                     Preguntas que ni Jeff ni el tutor socrático pudieron responder con respaldo y que los estudiantes enviaron para tu revisión.
                   </p>
                 </div>
-                <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl">
+                <div className="flex items-center gap-4 border-b border-slate-200">
                   {(['pendiente', 'resuelta', 'descartada', 'todas'] as const).map((estado) => (
                     <button
                       key={estado}
                       type="button"
                       onClick={() => setFiltroConsultas(estado)}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold capitalize transition ${
+                      className={`relative pb-2 text-xs font-semibold capitalize transition ${
                         filtroConsultas === estado
-                          ? 'bg-white text-usm-blue shadow-sm'
-                          : 'text-slate-600 hover:text-slate-900'
+                          ? 'text-[#234E86]'
+                          : 'text-slate-400 hover:text-slate-800'
                       }`}
                     >
                       {estado === 'todas' ? 'Todas' : `${estado}s`}
+                      {filtroConsultas === estado && (
+                        <span className="absolute bottom-[-1px] left-0 right-0 h-[2px] bg-[#234E86]" />
+                      )}
                     </button>
                   ))}
                 </div>
               </div>
 
               {cargandoConsultas ? (
-                <div className="bg-white p-8 rounded-2xl border border-slate-200 text-center text-xs text-slate-500">
+                <div className="bg-white p-10 rounded-sm border border-slate-200 text-center text-xs text-slate-500">
                   Cargando consultas...
                 </div>
               ) : (
@@ -1027,9 +1376,9 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
 
                   if (visibles.length === 0) {
                     return (
-                      <div className="bg-white p-8 rounded-2xl border border-slate-200 text-center space-y-1.5">
+                      <div className="bg-white p-12 rounded-sm border border-slate-200 text-center space-y-2">
                         <MessageSquareMore className="w-8 h-8 text-slate-300 mx-auto" />
-                        <p className="text-sm font-semibold text-slate-700">
+                        <p className="font-display text-sm font-semibold text-slate-800">
                           No hay consultas en esta categoría
                         </p>
                         <p className="text-xs text-slate-500">
@@ -1040,7 +1389,7 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                   }
 
                   return (
-                    <div className="space-y-3">
+                    <div className="space-y-4">
                       {visibles.map((consulta) => {
                         const borrador = borradoresRespuesta[consulta.id] || {
                           texto: consulta.respuesta_profesor || '',
@@ -1053,13 +1402,13 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                         return (
                           <div
                             key={consulta.id}
-                            className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-3"
+                            className="bg-white p-6 rounded-sm border border-slate-200 space-y-4"
                           >
                             <div className="flex flex-wrap items-start justify-between gap-2">
-                              <div className="space-y-1">
+                              <div className="space-y-1.5">
                                 <div className="flex flex-wrap items-center gap-2">
                                   <span
-                                    className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full ${
+                                    className={`font-mono text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-sm ${
                                       consulta.estado === 'pendiente'
                                         ? 'bg-amber-100 text-amber-800'
                                         : consulta.estado === 'resuelta'
@@ -1069,30 +1418,30 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                                   >
                                     {consulta.estado}
                                   </span>
-                                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
+                                  <span className="font-mono text-[10px] px-2 py-0.5 rounded-sm bg-slate-100 text-slate-600">
                                     {consulta.motivo === 'fuera_de_foco'
                                       ? 'Fuera de foco'
                                       : 'Sin respaldo RAG'}
                                   </span>
                                   {consulta.guardada_en_jeff && (
-                                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-usm-blue border border-blue-200">
+                                    <span className="font-mono text-[10px] font-semibold px-2 py-0.5 rounded-sm bg-blue-50 text-[#234E86] border border-blue-200">
                                       Guardada en Jeff ($0 GPU)
                                     </span>
                                   )}
                                 </div>
-                                <p className="text-sm font-semibold text-slate-800">
+                                <p className="font-display text-sm font-semibold text-slate-900">
                                   “{consulta.pregunta}”
                                 </p>
                               </div>
-                              <span className="text-[11px] text-slate-400">
+                              <span className="font-mono text-[11px] text-slate-400">
                                 {consulta.fecha_creacion.replace('T', ' ')}
                               </span>
                             </div>
 
                             {consulta.estado === 'pendiente' ? (
-                              <div className="space-y-3 pt-2 border-t border-slate-100">
+                              <div className="space-y-4 pt-3 border-t border-slate-100">
                                 <div>
-                                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                                  <label className="block font-mono text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 mb-1.5">
                                     Respuesta del docente
                                   </label>
                                   <textarea
@@ -1102,7 +1451,7 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                                       actualizarBorrador(consulta.id, { texto: e.target.value })
                                     }
                                     placeholder="Escribe una respuesta clara (si activas Jeff, esta respuesta se entregará automáticamente a futuros alumnos)..."
-                                    className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-usm-blue"
+                                    className="w-full rounded-sm border border-slate-300 px-3 py-2.5 text-xs focus:outline-none focus:border-[#234E86] transition-colors"
                                   />
                                 </div>
 
@@ -1115,7 +1464,7 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                                         guardarEnJeff: e.target.checked,
                                       })
                                     }
-                                    className="rounded border-slate-300 text-usm-blue focus:ring-usm-blue"
+                                    className="rounded-sm border-slate-300 text-[#234E86] focus:ring-[#234E86]"
                                   />
                                   <span className="font-medium">
                                     Guardar como FAQ de Jeff para responder futuras dudas iguales a $0 GPU
@@ -1123,9 +1472,9 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                                 </label>
 
                                 {borrador.guardarEnJeff && (
-                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 bg-slate-50 p-3 rounded-xl border border-slate-200">
+                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-50/70 p-4 rounded-sm border border-slate-200">
                                     <div>
-                                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                                      <label className="block font-mono text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1">
                                         Palabras clave (separadas por coma)
                                       </label>
                                       <input
@@ -1136,12 +1485,12 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                                             palabrasClave: e.target.value,
                                           })
                                         }
-                                        placeholder="ej: efecto tunel, cuantico, schrodinger"
-                                        className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-usm-blue"
+                                        placeholder="ej: subnetting, mascara, vlan"
+                                        className="w-full rounded-sm border border-slate-300 px-2.5 py-2 text-xs bg-white focus:outline-none focus:border-[#234E86]"
                                       />
                                     </div>
                                     <div>
-                                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                                      <label className="block font-mono text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1">
                                         Categoría en Jeff
                                       </label>
                                       <input
@@ -1152,18 +1501,18 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                                             categoria: e.target.value,
                                           })
                                         }
-                                        className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-usm-blue"
+                                        className="w-full rounded-sm border border-slate-300 px-2.5 py-2 text-xs bg-white focus:outline-none focus:border-[#234E86]"
                                       />
                                     </div>
                                   </div>
                                 )}
 
-                                <div className="flex flex-wrap items-center justify-end gap-2">
+                                <div className="flex flex-wrap items-center justify-end gap-2.5">
                                   <button
                                     type="button"
                                     disabled={ocupada}
                                     onClick={() => manejarResponderConsulta(consulta, 'descartada')}
-                                    className="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-100 border border-slate-200 transition disabled:opacity-50"
+                                    className="px-3.5 py-2 rounded-sm text-xs font-semibold text-slate-600 hover:bg-slate-100 border border-slate-300 transition disabled:opacity-50"
                                   >
                                     Descartar
                                   </button>
@@ -1171,7 +1520,7 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                                     type="button"
                                     disabled={ocupada}
                                     onClick={() => manejarResponderConsulta(consulta, 'resuelta')}
-                                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-usm-blue hover:bg-usm-dark text-white shadow-sm transition disabled:opacity-50"
+                                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-sm text-xs font-semibold bg-gradient-to-r from-[#1E4478] to-[#2B5D9E] hover:brightness-105 text-white transition disabled:opacity-50"
                                   >
                                     <Send className="w-3.5 h-3.5" />
                                     {ocupada
@@ -1184,9 +1533,9 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                               </div>
                             ) : (
                               consulta.respuesta_profesor && (
-                                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-700">
-                                  <span className="font-semibold text-slate-800 block mb-1">
-                                    Respuesta registrada:
+                                <div className="bg-slate-50 border-l-2 border-l-[#234E86] border border-slate-200 rounded-sm p-3.5 text-xs text-slate-700">
+                                  <span className="font-mono text-[10px] uppercase tracking-wider font-semibold text-slate-500 block mb-1">
+                                    Respuesta registrada
                                   </span>
                                   {consulta.respuesta_profesor}
                                 </div>
@@ -1204,26 +1553,21 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
 
           {/* OTRAS SUB-PESTAÑAS */}
           {subTab === 'jeff' && (
-            <div className="space-y-4">
+            <div className="space-y-6">
               {/* Encabezado y acción principal */}
-              <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex flex-wrap items-center justify-between gap-4">
-                <div className="flex items-start gap-3">
-                  <div className="p-2.5 rounded-xl bg-blue-50 text-usm-blue border border-blue-200">
-                    <Bot className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h3 className="text-sm font-bold text-slate-800">
-                      Preguntas Guardadas ({ramoActivo.codigo})
-                    </h3>
-                    <p className="text-xs text-slate-500 mt-0.5 max-w-2xl">
-                      Jeff responde al instante por palabras clave ($0 GPU) y el Tutor Socrático también busca estas preguntas semánticamente vía RAG cuando un alumno pregunta con otras palabras.
-                    </p>
-                  </div>
+              <div className="pb-5 border-b border-slate-200 flex flex-wrap items-end justify-between gap-4">
+                <div>
+                  <h3 className="font-display text-lg font-bold text-slate-950">
+                    Preguntas guardadas ({ramoActivo.codigo})
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5 max-w-2xl">
+                    Jeff responde al instante por palabras clave ($0 GPU) y el Tutor Socrático también busca estas preguntas semánticamente vía RAG cuando un alumno pregunta con otras palabras.
+                  </p>
                 </div>
                 <button
                   type="button"
                   onClick={abrirNuevaFaq}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-usm-blue text-white text-xs font-bold hover:bg-blue-800 transition shadow-sm"
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-sm bg-gradient-to-r from-[#1E4478] to-[#2B5D9E] text-white font-display text-xs font-semibold hover:brightness-105 transition"
                 >
                   <Plus className="w-4 h-4" />
                   <span>Nueva pregunta</span>
@@ -1234,25 +1578,25 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
               {mostrarFormFaq && (
                 <form
                   onSubmit={manejarGuardarFaq}
-                  className="bg-white p-5 rounded-2xl border border-blue-200 shadow-sm space-y-4"
+                  className="bg-white p-6 rounded-sm border-l-2 border-l-[#234E86] border border-slate-200 space-y-4"
                 >
                   <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                    <h4 className="text-xs font-bold text-slate-800">
+                    <h4 className="font-display text-sm font-bold text-slate-900">
                       {faqEditandoId ? 'Editar pregunta guardada' : 'Nueva pregunta guardada'}
                     </h4>
                     <button
                       type="button"
                       onClick={cancelarFormFaq}
-                      className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
+                      className="text-slate-400 hover:text-slate-700 p-1 transition"
                       title="Cancelar"
                     >
                       <X className="w-4 h-4" />
                     </button>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      <label className="block font-mono text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">
                         Pregunta de referencia
                       </label>
                       <input
@@ -1260,11 +1604,11 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                         value={faqPregunta}
                         onChange={(e) => setFaqPregunta(e.target.value)}
                         placeholder="Ej: ¿Cuándo se entrega el informe del Laboratorio 1?"
-                        className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-usm-blue"
+                        className="w-full rounded-sm border border-slate-300 px-3 py-2 text-xs focus:outline-none focus:border-[#234E86]"
                       />
                     </div>
                     <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      <label className="block font-mono text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">
                         Categoría
                       </label>
                       <input
@@ -1272,13 +1616,13 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                         value={faqCategoria}
                         onChange={(e) => setFaqCategoria(e.target.value)}
                         placeholder="Ej: Fechas y Entregas, Consultas Resueltas"
-                        className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-usm-blue"
+                        className="w-full rounded-sm border border-slate-300 px-3 py-2 text-xs focus:outline-none focus:border-[#234E86]"
                       />
                     </div>
                   </div>
 
                   <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    <label className="block font-mono text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">
                       Respuesta oficial
                     </label>
                     <textarea
@@ -1286,13 +1630,13 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                       value={faqRespuesta}
                       onChange={(e) => setFaqRespuesta(e.target.value)}
                       placeholder="Escribe la respuesta oficial que entregarán Jeff y el Tutor Socrático..."
-                      className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-usm-blue"
+                      className="w-full rounded-sm border border-slate-300 px-3 py-2 text-xs focus:outline-none focus:border-[#234E86]"
                       required
                     />
                   </div>
 
                   <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    <label className="block font-mono text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">
                       Palabras clave para Jeff (separadas por coma)
                     </label>
                     <input
@@ -1300,25 +1644,25 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                       value={faqPalabrasClave}
                       onChange={(e) => setFaqPalabrasClave(e.target.value)}
                       placeholder="Ej: informe 1, entrega, plazo (si lo dejas vacío, se sugieren desde la pregunta)"
-                      className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-usm-blue"
+                      className="w-full rounded-sm border border-slate-300 px-3 py-2 text-xs focus:outline-none focus:border-[#234E86]"
                     />
                     <p className="text-[11px] text-slate-400 mt-1">
                       Jeff interceptará consultas que contengan estas palabras clave; si no coinciden, el Tutor Socrático buscará por significado en RAG.
                     </p>
                   </div>
 
-                  <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                  <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-slate-100">
                     <button
                       type="button"
                       onClick={cancelarFormFaq}
-                      className="px-3.5 py-2 rounded-xl border border-slate-300 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition"
+                      className="px-3.5 py-2 rounded-sm border border-slate-300 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition"
                     >
                       Cancelar
                     </button>
                     <button
                       type="submit"
                       disabled={guardandoFaq}
-                      className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-usm-blue text-white text-xs font-bold hover:bg-blue-800 disabled:opacity-50 transition shadow-sm"
+                      className="inline-flex items-center gap-1.5 px-4 py-2 rounded-sm bg-gradient-to-r from-[#1E4478] to-[#2B5D9E] text-white text-xs font-semibold hover:brightness-105 disabled:opacity-50 transition"
                     >
                       <Save className="w-3.5 h-3.5" />
                       <span>
@@ -1334,7 +1678,7 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
               )}
 
               {/* Buscador y listado */}
-              <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+              <div className="bg-white p-5 rounded-sm border border-slate-200 space-y-5">
                 <div className="relative">
                   <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                   <input
@@ -1342,7 +1686,7 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                     value={busquedaFaqs}
                     onChange={(e) => setBusquedaFaqs(e.target.value)}
                     placeholder="Buscar por pregunta, respuesta, categoría o palabras clave..."
-                    className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-xs focus:outline-none focus:ring-2 focus:ring-usm-blue"
+                    className="w-full pl-9 pr-3 py-2.5 bg-slate-50/70 border-b-2 border-slate-200 text-xs focus:outline-none focus:border-[#234E86] focus:bg-white rounded-none transition-colors"
                   />
                 </div>
 
@@ -1368,9 +1712,9 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
 
                   if (filtradas.length === 0) {
                     return (
-                      <div className="py-8 text-center space-y-1.5">
+                      <div className="py-10 text-center space-y-1.5">
                         <Bot className="w-8 h-8 text-slate-300 mx-auto" />
-                        <p className="text-sm font-semibold text-slate-700">
+                        <p className="font-display text-sm font-semibold text-slate-800">
                           {faqsJeff.length === 0
                             ? 'Aún no hay preguntas guardadas para este ramo'
                             : 'No se encontraron preguntas con ese filtro'}
@@ -1383,16 +1727,16 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                   }
 
                   return (
-                    <div className="space-y-3">
+                    <div className="divide-y divide-slate-200">
                       {filtradas.map((faq) => (
                         <div
                           key={faq.id}
-                          className="p-4 rounded-xl border border-slate-200 hover:border-slate-300 transition bg-slate-50/40 space-y-2.5"
+                          className="py-4 first:pt-1 last:pb-1 space-y-2.5"
                         >
                           <div className="flex flex-wrap items-start justify-between gap-2">
                             <div className="space-y-1 flex-1 min-w-0">
                               <div className="flex flex-wrap items-center gap-2">
-                                <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded-full bg-blue-50 text-usm-blue border border-blue-200">
+                                <span className="font-mono text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-sm bg-blue-50 text-[#234E86] border border-blue-200">
                                   {faq.categoria || 'General'}
                                 </span>
                                 <span className="text-[10px] font-mono text-slate-400">
@@ -1400,7 +1744,7 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                                 </span>
                               </div>
                               {faq.pregunta && (
-                                <p className="text-sm font-semibold text-slate-800">
+                                <p className="font-display text-sm font-semibold text-slate-900">
                                   “{faq.pregunta}”
                                 </p>
                               )}
@@ -1409,7 +1753,7 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                               <button
                                 type="button"
                                 onClick={() => abrirEditarFaq(faq)}
-                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-[11px] font-semibold text-slate-700 hover:bg-slate-50 transition"
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-sm border border-slate-200 bg-white text-[11px] font-semibold text-slate-700 hover:border-[#234E86] hover:text-[#234E86] transition"
                               >
                                 <Pencil className="w-3 h-3" />
                                 <span>Editar</span>
@@ -1418,7 +1762,7 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                                 type="button"
                                 disabled={eliminandoFaqId === faq.id}
                                 onClick={() => manejarEliminarFaq(faq)}
-                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-red-200 bg-white text-[11px] font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50 transition"
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-sm border border-red-200 bg-white text-[11px] font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50 transition"
                               >
                                 <Trash2 className="w-3 h-3" />
                                 <span>{eliminandoFaqId === faq.id ? 'Eliminando...' : 'Eliminar'}</span>
@@ -1426,19 +1770,19 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                             </div>
                           </div>
 
-                          <p className="text-xs text-slate-700 whitespace-pre-wrap leading-relaxed bg-white p-3 rounded-lg border border-slate-100">
-                            {faq.respuesta}
+                          <p className="text-xs text-slate-700 whitespace-pre-wrap leading-relaxed bg-slate-50/70 p-3.5 rounded-sm border-l-2 border-l-[#4378B8]">
+                            {(faq.respuesta || '').replace(/^📌\s*/, '')}
                           </p>
 
                           {faq.palabras_clave && faq.palabras_clave.length > 0 && (
                             <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                              <span className="text-[10px] font-semibold text-slate-500">
-                                Keywords Jeff:
+                              <span className="font-mono text-[10px] uppercase tracking-wider font-semibold text-slate-400">
+                                Keywords
                               </span>
                               {faq.palabras_clave.map((kw) => (
                                 <span
                                   key={kw}
-                                  className="text-[10px] px-2 py-0.5 rounded-full bg-slate-200/70 text-slate-700 font-medium"
+                                  className="font-mono text-[10px] px-2 py-0.5 rounded-sm bg-slate-100 text-slate-700"
                                 >
                                   {kw}
                                 </span>
@@ -1457,22 +1801,18 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
           {subTab === 'socratico' && (
             <form
               onSubmit={manejarGuardarConfigSocratica}
-              className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-6"
+              className="bg-white p-7 rounded-sm border border-slate-200 space-y-7"
             >
-              <div className="flex items-start justify-between gap-4 border-b border-slate-100 pb-4">
-                <div className="flex items-center gap-3">
-                  <div className="p-2.5 rounded-xl bg-amber-50 text-usm-gold border border-amber-200">
-                    <Sparkles className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h3 className="text-sm font-bold text-slate-800">
-                      Reglas Socráticas del Tutor ({ramoActivo.codigo})
-                    </h3>
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      Define cómo responde el modelo generativo (Qwen3 8B) cuando apoya a tus estudiantes con los apuntes del curso.
-                    </p>
-                  </div>
-                </div>
+              <div className="border-b border-slate-200 pb-5">
+                <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-[#3A70B2]">
+                  Configuración del modelo · Qwen3 8B
+                </span>
+                <h3 className="font-display text-lg font-bold text-slate-950 mt-1">
+                  Reglas socráticas del tutor ({ramoActivo.codigo})
+                </h3>
+                <p className="text-xs text-slate-500 mt-1">
+                  Define cómo responde el modelo generativo cuando apoya a tus estudiantes con los apuntes del curso.
+                </p>
               </div>
 
               {cargandoSocratica ? (
@@ -1481,11 +1821,11 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                 </p>
               ) : (
                 <>
-                  <div className="space-y-2">
-                    <label className="block text-xs font-bold text-slate-700">
+                  <div className="space-y-2.5">
+                    <label className="block font-mono text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
                       Estilo pedagógico
                     </label>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                       {(
                         [
                           {
@@ -1509,21 +1849,21 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                           key={op.id}
                           type="button"
                           onClick={() => setEstiloSocratico(op.id)}
-                          className={`text-left p-3.5 rounded-xl border transition ${
+                          className={`text-left p-4 rounded-sm border transition ${
                             estiloSocratico === op.id
-                              ? 'border-usm-blue bg-blue-50/60 ring-1 ring-usm-blue'
+                              ? 'border-[#234E86] border-t-2 border-t-[#234E86] bg-blue-50/40'
                               : 'border-slate-200 hover:border-slate-300 bg-white'
                           }`}
                         >
-                          <div className="text-xs font-bold text-slate-800">{op.titulo}</div>
-                          <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">{op.desc}</p>
+                          <div className="font-display text-xs font-bold text-slate-900">{op.titulo}</div>
+                          <p className="text-[11px] text-slate-500 mt-1.5 leading-relaxed">{op.desc}</p>
                         </button>
                       ))}
                     </div>
                   </div>
 
-                  <div className="space-y-2">
-                    <label className="block text-xs font-bold text-slate-700">
+                  <div className="space-y-2.5">
+                    <label className="block font-mono text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
                       Extensión de respuesta
                     </label>
                     <div className="flex flex-wrap gap-3">
@@ -1537,10 +1877,10 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                           key={op.id}
                           type="button"
                           onClick={() => setExtensionSocratica(op.id)}
-                          className={`px-3.5 py-2 rounded-xl text-xs font-semibold border transition ${
+                          className={`px-4 py-2.5 rounded-sm text-xs font-semibold border transition ${
                             extensionSocratica === op.id
-                              ? 'border-usm-blue bg-usm-blue text-white shadow-sm'
-                              : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                              ? 'border-[#234E86] bg-[#234E86] text-white'
+                              : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'
                           }`}
                         >
                           {op.label}
@@ -1550,7 +1890,7 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                   </div>
 
                   <div className="space-y-2">
-                    <label className="block text-xs font-bold text-slate-700">
+                    <label className="block font-mono text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
                       Instrucciones y restricciones específicas del ramo
                     </label>
                     <textarea
@@ -1558,15 +1898,15 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                       value={reglasSocraticas}
                       onChange={(e) => setReglasSocraticas(e.target.value)}
                       placeholder="Ej.: Jamás entregues el resultado numérico final ni comandos completos. Usa analogías físicas y exige que el alumno identifique las condiciones de borde."
-                      className="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-xs leading-relaxed focus:outline-none focus:ring-2 focus:ring-usm-blue"
+                      className="w-full rounded-sm border border-slate-300 px-3.5 py-2.5 text-xs leading-relaxed focus:outline-none focus:border-[#234E86]"
                     />
                   </div>
 
-                  <div className="flex justify-end pt-2 border-t border-slate-100">
+                  <div className="flex justify-end pt-4 border-t border-slate-100">
                     <button
                       type="submit"
                       disabled={guardandoSocratica}
-                      className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold bg-usm-blue hover:bg-usm-dark text-white shadow-sm transition disabled:opacity-50"
+                      className="inline-flex items-center gap-2 px-5 py-2.5 rounded-sm font-display text-xs font-semibold bg-gradient-to-r from-[#1E4478] to-[#2B5D9E] hover:brightness-105 text-white transition disabled:opacity-50"
                     >
                       <Save className="w-4 h-4" />
                       {guardandoSocratica ? 'Guardando...' : 'Guardar configuración socrática'}
@@ -1578,60 +1918,65 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
           )}
 
           {subTab === 'analitica' && (
-            <div className="bg-white p-8 rounded-2xl border border-slate-200 text-center space-y-2">
-              <BarChart3 className="w-10 h-10 text-emerald-600 mx-auto" />
-              <h3 className="text-base font-bold text-slate-800">Analítica Anónima de Dudas</h3>
-              <p className="text-xs text-slate-500 max-w-md mx-auto">
+            <div className="bg-white p-12 rounded-sm border border-slate-200 text-center space-y-2.5">
+              <BarChart3 className="w-9 h-9 text-[#3A70B2] mx-auto" />
+              <h3 className="font-display text-base font-bold text-slate-900">
+                Analítica anónima de dudas
+              </h3>
+              <p className="text-xs text-slate-500 max-w-md mx-auto leading-relaxed">
                 Aquí se desplegarán las métricas de qué temas están consultando los alumnos sin vulnerar su privacidad.
               </p>
             </div>
           )}
         </div>
       </div>
+      )}
 
       {/* ======================================================== */}
       {/* VENTANA MODAL SUPERPUESTA PARA SUBIR ARCHIVO */}
       {/* ======================================================== */}
       {modalSubirAbierto && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
-          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-md w-full overflow-hidden">
+        <div className="fixed inset-0 z-50 bg-slate-950/50 backdrop-blur-[2px] flex items-center justify-center p-4">
+          <div className="bg-white rounded-sm shadow-2xl border border-slate-200 max-w-md w-full overflow-hidden">
+            {/* Franja superior en degradado */}
+            <div className="h-1 w-full bg-gradient-to-r from-[#234E86] via-[#4378B8] to-[#83B7E8]" />
+
             {/* Cabecera del Modal */}
-            <div className="p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50">
-              <div className="flex items-center gap-2">
-                <div className="p-2 bg-usm-blue/10 text-usm-blue rounded-xl">
-                  <UploadCloud className="w-5 h-5 text-usm-blue" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold text-slate-800">Cargar Archivo al Repositorio</h3>
-                  <p className="text-[11px] text-slate-500">Asignatura: {ramoActivo.codigo}</p>
-                </div>
+            <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+              <div>
+                <h3 className="font-display text-sm font-bold text-slate-950">
+                  Cargar archivo al repositorio
+                </h3>
+                <p className="font-mono text-[10px] uppercase tracking-wider text-slate-400 mt-0.5">
+                  Asignatura · {ramoActivo.codigo}
+                </p>
               </div>
               <button
                 onClick={() => {
                   setModalSubirAbierto(false);
                   setArchivoParaSubir(null);
                 }}
-                className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-200/60 transition"
+                className="p-1.5 text-slate-400 hover:text-slate-700 transition"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
             {/* Formulario de Subida */}
-            <form onSubmit={manejarSubidaModal} className="p-6 space-y-4">
+            <form onSubmit={manejarSubidaModal} className="p-6 space-y-5">
               {/* Selección de Carpeta de Destino */}
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                  Carpeta de destino:
+                <label className="block font-mono text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">
+                  Carpeta de destino
                 </label>
                 <select
                   value={carpetaDestinoSubida}
                   onChange={(e) => setCarpetaDestinoSubida(e.target.value)}
-                  className="w-full text-xs bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-slate-800 focus:outline-none focus:ring-1 focus:ring-usm-blue font-mono font-medium"
+                  className="w-full text-xs bg-slate-50/70 border-b-2 border-slate-200 rounded-none px-3 py-2.5 text-slate-800 focus:outline-none focus:border-[#234E86] font-mono font-medium"
                 >
                   {carpetas.map((c) => (
                     <option key={c} value={c}>
-                      📁 {c}
+                      {c.replace(/\//g, ' / ')}
                     </option>
                   ))}
                 </select>
@@ -1639,12 +1984,12 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
 
               {/* Selector de Archivo */}
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                  Selecciona el documento:
+                <label className="block font-mono text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">
+                  Documento
                 </label>
                 <div
                   onClick={() => fileInputModalRef.current?.click()}
-                  className="border-2 border-dashed border-slate-200 hover:border-usm-blue rounded-xl p-6 text-center cursor-pointer bg-slate-50/50 hover:bg-blue-50/30 transition-all"
+                  className="border border-dashed border-slate-300 hover:border-[#234E86] rounded-sm p-6 text-center cursor-pointer bg-slate-50/50 hover:bg-blue-50/30 transition-all"
                 >
                   <input
                     ref={fileInputModalRef}
@@ -1653,13 +1998,13 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                     onChange={(e) => setArchivoParaSubir(e.target.files?.[0] || null)}
                     className="hidden"
                   />
-                  <FileText className="w-8 h-8 text-usm-blue mx-auto mb-2 opacity-80" />
+                  <FileText className="w-7 h-7 text-[#3A70B2] mx-auto mb-2" />
                   {archivoParaSubir ? (
                     <div>
-                      <p className="text-xs font-bold text-slate-800 truncate">
+                      <p className="text-xs font-bold text-slate-900 truncate">
                         {archivoParaSubir.name}
                       </p>
-                      <p className="text-[11px] text-emerald-600 font-semibold mt-0.5">
+                      <p className="font-mono text-[10px] text-emerald-600 font-semibold mt-1">
                         {(archivoParaSubir.size / (1024 * 1024)).toFixed(2)} MB · Listo para subir
                       </p>
                     </div>
@@ -1668,30 +2013,30 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                       <p className="text-xs font-semibold text-slate-700">
                         Haz clic para buscar o arrastra el archivo aquí
                       </p>
-                      <p className="text-[10px] text-slate-400 mt-1">Formatos: PDF, TXT o DOCX</p>
+                      <p className="font-mono text-[10px] text-slate-400 mt-1">PDF, TXT o DOCX</p>
                     </div>
                   )}
                 </div>
               </div>
 
               {/* Botones de Acción */}
-              <div className="pt-2 flex items-center justify-end gap-2 border-t border-slate-100">
+              <div className="pt-3 flex items-center justify-end gap-2.5 border-t border-slate-100">
                 <button
                   type="button"
                   onClick={() => {
                     setModalSubirAbierto(false);
                     setArchivoParaSubir(null);
                   }}
-                  className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 transition"
+                  className="px-4 py-2 rounded-sm text-xs font-semibold text-slate-600 hover:bg-slate-100 transition"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
                   disabled={subiendoArchivo || !archivoParaSubir}
-                  className="px-4 py-2 rounded-xl bg-usm-blue hover:bg-usm-dark text-white text-xs font-bold shadow-md hover:shadow-lg transition disabled:opacity-50"
+                  className="px-4 py-2 rounded-sm bg-gradient-to-r from-[#1E4478] to-[#2B5D9E] hover:brightness-105 text-white font-display text-xs font-semibold transition disabled:opacity-50"
                 >
-                  {subiendoArchivo ? 'Subiendo e indexando...' : 'Subir e Indexar en RAG'}
+                  {subiendoArchivo ? 'Subiendo e indexando...' : 'Subir e indexar en RAG'}
                 </button>
               </div>
             </form>

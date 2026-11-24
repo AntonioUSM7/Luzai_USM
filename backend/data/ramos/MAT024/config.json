@@ -43,19 +43,19 @@
       "id": "mat_certamen",
       "categoria": "Evaluaciones",
       "palabras_clave": ["certamen", "fecha", "prueba", "evaluacion", "cuando es el certamen", "control"],
-      "respuesta": "📌 [Jeff - Info Administrativa MAT024]: El Certamen 1 de MAT024 está programado para el sábado a las 09:00 hrs. La distribución de salas se publica 48 horas antes en AULA."
+      "respuesta": "[Jeff - Info Administrativa MAT024]: El Certamen 1 de MAT024 está programado para el sábado a las 09:00 hrs. La distribución de salas se publica 48 horas antes en AULA."
     },
     {
       "id": "mat_libro",
       "categoria": "Bibliografía",
       "palabras_clave": ["libro", "bibliografia", "zill", "texto", "apunte", "recomendado"],
-      "respuesta": "📌 [Jeff - Info Administrativa MAT024]: La bibliografía base de MAT024 es 'Ecuaciones Diferenciales con Problemas con Valores en la Frontera' de Dennis G. Zill y 'Cálculo Vectorial' de Marsden & Tromba."
+      "respuesta": "[Jeff - Info Administrativa MAT024]: La bibliografía base de MAT024 es 'Ecuaciones Diferenciales con Problemas con Valores en la Frontera' de Dennis G. Zill y 'Cálculo Vectorial' de Marsden & Tromba."
     },
     {
       "id": "mat_ayudantia",
       "categoria": "Ayudantías",
       "palabras_clave": ["ayudantia", "ayudante", "consultas", "sala"],
-      "respuesta": "📌 [Jeff - Info Administrativa MAT024]: Las ayudantías oficiales se realizan los miércoles en bloque 7-8 en las salas del Edificio A."
+      "respuesta": "[Jeff - Info Administrativa MAT024]: Las ayudantías oficiales se realizan los miércoles en bloque 7-8 en las salas del Edificio A."
     }
   ]
 }
