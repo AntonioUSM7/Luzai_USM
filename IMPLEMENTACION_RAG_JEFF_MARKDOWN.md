@@ -465,7 +465,8 @@ El flag `-V` renueva el volumen anónimo de `node_modules`.
    - Pendiente: mostrar esas fuentes como tarjetas o enlaces en el frontend.
 
 5. **Analítica docente**
-   - No implementada en esta iteración.
+   - Implementada con `backend/analytics_store.py`, `GET /api/ramos/{codigo}/analytics/resumen` y `frontend/src/views/profesor/AnaliticaDocentePanel.tsx`.
+   - Sanitiza correos, RUT, URLs, IPs, IPv6 y teléfonos antes de persistir; agrupa dudas por tópico en Jeff y por similitud léxica en Tutor/Fallback.
 
 6. **Rendimiento del renderizado**
    - ReactMarkdown reparsea el mensaje en cada token durante el streaming.
@@ -476,21 +477,21 @@ El flag `-V` renueva el volumen anónimo de `node_modules`.
    - Opcional: code splitting con `React.lazy` o `manualChunks`.
 
 8. **Jeff semántico**
-   - Jeff es determinista por keywords; no usa embeddings.
-   - Pendiente opcional: fallback semántico para frases administrativas no cubiertas.
+   - El nivel 1 de Jeff sigue siendo determinista por keywords ($0 GPU).
+   - Tareas y FAQs se indexan en ChromaDB y se recuperan en `buscar_fragmentos_planificacion()`; los parafraseos sin keyword se resuelven con RAG + Tutor Socrático.
 
 9. **Badge “Indexado en RAG” hardcodeado**
-   - `DocenteView.tsx:631-635` muestra el badge en verde aunque el ramo tenga 0 fragmentos.
-   - No existe botón de reindexar en el frontend; la reindexación automática es la solución temporal.
+   - Resuelto: `DocenteView.tsx` usa `archivo.indexado_rag` y `GET /api/ramos/{codigo}/estado_rag`.
+   - Resuelto: botón “Reindexar RAG” disponible en **Archivos del curso**.
 
 10. **DOCX no indexados**
     - TEL20425 tiene 4 archivos DOCX además de los PDFs; el pipeline actual solo indexa PDFs.
 
 11. **Configuración de TEL20425 desactualizada**
-    - El arreglo `documentos` de `config.json` aún lista 3 PDFs que ya no están en la carpeta.
+    - Resuelto: se limpiaron las referencias obsoletas del arreglo `documentos` en `MAT024` y `TEL20425`.
 
 12. **Carpetas de imágenes antiguas**
-    - Quedan directorios vacíos con espacios en `imagenes/`; los directorios sanitizados contienen las 301 imágenes válidas.
+    - Resuelto: se eliminaron los directorios vacíos con espacios; el respaldo de pruebas quedó en `tests/datos_prueba_respaldo/`.
 
 13. **Guard de alcance heurístico**
     - Se basa en palabras del temario + score de recuperación (`RAG_OFFTOPIC_SCORE=0.65`).
@@ -722,16 +723,41 @@ docker compose exec backend python test_modo.py
 - El guard de alcance es heurístico: depende de las palabras del temario y del score; puede fallar con subtemas no listados.
 - El guard de cálculo directo solo actúa con acciones explícitas (`calcula`, `resuelve`, etc.) y datos/temas; preguntas tipo “¿Cómo se calcula…?” pueden recibir una explicación procedimental del LLM.
 - Los DOCX de TEL20425 no se indexan.
-- El badge “Indexado en RAG” sigue hardcodeado y no hay botón de reindexar en la UI.
-- Quedan carpetas vacías con espacios en `imagenes/`; los directorios sanitizados son los que contienen las imágenes válidas.
-- La reindexación automática es temporal; a futuro conviene un botón manual y un estado real por ramo.
+- Las respuestas Jeff por keyword siguen siendo deterministas; los parafraseos se resuelven con RAG + Tutor Socrático, no como respuesta fija de Jeff.
+- La reindexación manual ya existe en la UI; la automática al arranque se conserva como respaldo.
+- Los datos de prueba están aislados en `tests/`; `backend/data/ramos/` y `backend/data/analytics/` quedan sin archivos de prueba.
 
 ### 14.8 Próximos pasos sugeridos
 
-1. Implementar en el frontend el botón “Reindexar” y reemplazar el badge hardcodeado por `estado_rag` real.
+1. (Hecho) Botón “Reindexar RAG” y badge real basado en `estado_rag` / `archivo.indexado_rag`.
 2. Indexar DOCX (o convertirlos a PDF/Markdown antes de indexar).
-3. Limpiar las carpetas vacías de imágenes y actualizar el arreglo `documentos` de TEL20425.
+3. (Hecho) Limpieza de carpetas vacías y del arreglo `documentos` de TEL20425.
 4. Evaluar un modelo 7B para mejorar adherencia factual y de formato.
-5. Añadir pruebas automatizadas del guard de alcance, del guard de cálculo directo y del resumen conceptual.
-6. Si se requiere, mover la reindexación automática a una tarea administrativa explícita en lugar del arranque.
+5. (Hecho) Pruebas automatizadas del guard de alcance, del guard de cálculo directo, del resumen conceptual, RAG de tareas y analítica.
+6. (Hecho) Reindexación manual disponible; se conserva la automática al arranque como respaldo.
 7. Si se busca un modo socrático estricto, extender el guard de cálculo a preguntas del tipo “¿Cómo se calcula…?”.
+
+---
+
+## 15. Cierre del change `add-docente-analytics-and-jeff-tasks`
+
+- Progreso OpenSpec: `12/12` tareas completadas en `openspec/changes/add-docente-analytics-and-jeff-tasks/tasks.md`.
+- RAG de tareas: `backend/rag_engine.py` indexa tareasJeff, las incluye en `buscar_fragmentos_planificacion()` y propaga fallos de eliminación vectorial; los endpoints `POST/PUT/DELETE /api/ramos/{codigo}/tareas` reportan `rag_sincronizado` real.
+- CRUD/fallback: carpeta `Planificacion` por defecto; `GET/PUT /api/ramos/{codigo}/config_fallback` con guardado atómico, actualización parcial no destructiva y `canal_alternativo` anexado a las respuestas `FALLBACK_DOCENTE`.
+- Vista docente: badge RAG real, conteo de `estado_rag`, botón “Reindexar RAG” y editor de `config_fallback`.
+- Analítica: sanitización de identificadores, agrupación léxica de paráfrasis, filtros `canal`/`limite`/`dias`, comparativa por canal y botón “Guardar en Jeff”.
+- Aislamiento: suites en `tests/` con `tempfile.TemporaryDirectory()`; sin archivos en `backend/data/ramos/TEST101`, `backend/data/ramos/MAT999` ni `backend/data/analytics/`.
+
+### Verificación ejecutada
+
+```bash
+python3 -m unittest discover -s tests -p "test_*.py" -v   # 29 tests, OK
+npx tsc --noEmit && npm run build                        # OK (frontend/dist generado)
+docker compose config                                    # OK (luzai_usm)
+openspec instructions apply --change "add-docente-analytics-and-jeff-tasks" --json  # 12/12
+openspec validate add-docente-analytics-and-jeff-tasks --strict --json             # válido, 0 issues
+```
+
+### Nota de entorno
+
+- `backend/requirements.txt` mantenido sin cambios. En Python `3.14.10`, el pin `pydantic-core==2.23.4` falla al compilar; la verificación local usó `pydantic 2.14.4`, `fastapi 0.165.0` y dependencias compatibles instaladas en el entorno.

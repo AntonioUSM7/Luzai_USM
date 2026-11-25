@@ -4,11 +4,7 @@
   "departamento": "Departamento de Electrónica e Informática",
   "profesor": "Prof. Coord. Laboratorio de Redes",
   "descripcion": "Diseño, configuración y análisis de redes de computadores, enrutamiento, subnetting y protocolos TCP/IP.",
-  "documentos": [
-    "Guia_Laboratorio_1_Subnetting_VLAN.pdf",
-    "Rubrica_Informes_TEL20425.pdf",
-    "Manual_Wireshark_Capturas.pdf"
-  ],
+  "documentos": [],
   "reglas_socraticas": "Guía el aprendizaje con preguntas sobre direccionamiento IP, máscaras de subred, VLAN, STP, ACL, firewall y análisis de tramas. En consultas conceptuales (qué es, explica, resume, diferencia, para qué sirve), entrega primero una síntesis breve y clara basada en los apuntes y luego 1-2 preguntas. En ejercicios, configuraciones o cálculos, nunca entregues comandos completos, configuraciones listas ni resultados finales; guía con pistas y pasos.",
   "config_socratica": {
     "estilo": "equilibrado",
@@ -78,17 +74,6 @@
         "gns3"
       ],
       "respuesta": "[Jeff - Info Administrativa TEL20425]: El texto guía es 'Computer Networking: A Top-Down Approach' (Kurose & Ross). Para las experiencias utilizamos Wireshark y GNS3/Packet Tracer."
-    },
-    {
-      "id": "docente_03733399",
-      "categoria": "Consultas Resueltas",
-      "palabras_clave": [
-        "que es una red",
-        "que son las redes",
-        "que es una network",
-        "definicion de red"
-      ],
-      "respuesta": "[Jeff - Respuesta Docente TEL20425]: Una red (en el ámbito tecnológico e informático) es un conjunto de dos o más dispositivos (como computadores, servidores, teléfonos, routers o switches) conectados entre sí mediante medios físicos (cables de cobre, fibra óptica) o inalámbricos (Wi-Fi, Bluetooth, ondas de radio) con el objetivo de compartir información, recursos y servicios."
     }
   ]
 }

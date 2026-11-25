@@ -8,7 +8,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+TESTS_DIR = Path(__file__).resolve().parent
+if str(TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(TESTS_DIR))
+
+from _test_env import asegurar_backend_en_path, parches_aislamiento_datos
+
+asegurar_backend_en_path()
 
 try:
     import rag_engine  # noqa: F401
@@ -39,7 +45,19 @@ def _parsear_sse(texto: str):
 
 class TestFallbackEstricto(unittest.TestCase):
     def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.analytics_dir = Path(self.tmpdir.name) / "analytics"
+        self.patchers = [
+            patch.object(backend_app.analytics_store, "ANALYTICS_DIR", self.analytics_dir),
+        ]
+        for p in self.patchers:
+            p.start()
         self.client = TestClient(backend_app.app)
+
+    def tearDown(self):
+        for p in self.patchers:
+            p.stop()
+        self.tmpdir.cleanup()
 
     def test_fuera_de_foco_emite_fallback_docente_sin_llamar_ollama(self):
         llamado_ollama = False
@@ -130,11 +148,16 @@ class TestBuzonDocenteYConversionJeff(unittest.TestCase):
         with open(ramo_dir / "config.json", "w", encoding="utf-8") as f:
             json.dump(self.config_inicial, f, ensure_ascii=False, indent=2)
 
-        self.patchers = [
-            patch.object(backend_app, "BASE_DATA_DIR", self.data_dir),
-            patch.object(backend_app.router_jeff, "DATA_DIR", self.data_dir),
-            patch.object(backend_app.consultas_store, "DATA_DIR", self.data_dir),
-        ]
+        self.analytics_dir = Path(self.tmpdir.name) / "analytics"
+        self.patchers = parches_aislamiento_datos(
+            self.data_dir,
+            self.analytics_dir,
+            backend_app=backend_app,
+            router_jeff=backend_app.router_jeff,
+            consultas_store=backend_app.consultas_store,
+            rag_engine=backend_app.rag_engine,
+            analytics_store=backend_app.analytics_store,
+        )
         for p in self.patchers:
             p.start()
         self.client = TestClient(backend_app.app)
@@ -336,6 +359,105 @@ class TestBuzonDocenteYConversionJeff(unittest.TestCase):
 
         resp_del_404 = self.client.delete(f"/api/ramos/TEST101/faqs_jeff/{faq_id}")
         self.assertEqual(resp_del_404.status_code, 404)
+
+    def test_crud_api_tareas_carpeta_planificacion_y_config_fallback(self):
+        # 1. Carpeta Planificacion incluida por defecto
+        resp_carpetas = self.client.get("/api/ramos/TEST101/carpetas")
+        self.assertEqual(resp_carpetas.status_code, 200)
+        self.assertIn("Planificacion", resp_carpetas.json()["carpetas"])
+
+        # 2. CRUD HTTP de tareas con sincronización RAG
+        with patch.object(
+            backend_app.rag_engine,
+            "indexar_tarea_jeff",
+            return_value={"status": "ok", "chunks_indexados": 1},
+        ) as mock_idx_tarea:
+            resp_create = self.client.post(
+                "/api/ramos/TEST101/tareas",
+                json={
+                    "titulo": "Tarea 1: Redes",
+                    "fecha_limite": "Viernes 23:59",
+                    "formato_entrega": "PDF",
+                    "plataforma": "AULA",
+                    "palabras_clave": ["tarea 1", "entrega tarea 1"],
+                },
+            )
+        self.assertEqual(resp_create.status_code, 200)
+        self.assertTrue(resp_create.json()["rag_sincronizado"])
+        tarea_id = resp_create.json()["tarea"]["id"]
+        mock_idx_tarea.assert_called_once()
+
+        resp_list = self.client.get("/api/ramos/TEST101/tareas")
+        self.assertEqual(resp_list.status_code, 200)
+        self.assertEqual(resp_list.json()["total"], 1)
+
+        with patch.object(
+            backend_app.rag_engine,
+            "indexar_tarea_jeff",
+            return_value={"status": "ok", "chunks_indexados": 1},
+        ):
+            resp_put = self.client.put(
+                f"/api/ramos/TEST101/tareas/{tarea_id}",
+                json={
+                    "titulo": "Tarea 1: Redes actualizada",
+                    "fecha_limite": "Lunes 18:00",
+                    "palabras_clave": ["tarea 1"],
+                },
+            )
+        self.assertEqual(resp_put.status_code, 200)
+        self.assertEqual(resp_put.json()["tarea"]["fecha_limite"], "Lunes 18:00")
+        self.assertEqual(resp_put.json()["tarea"]["plataforma"], "AULA")
+        self.assertEqual(resp_put.json()["tarea"]["formato_entrega"], "PDF")
+
+        with patch.object(
+            backend_app.rag_engine, "eliminar_tarea_vectorial", return_value=None
+        ) as mock_del_tarea:
+            resp_del = self.client.delete(f"/api/ramos/TEST101/tareas/{tarea_id}")
+        self.assertEqual(resp_del.status_code, 200)
+        self.assertTrue(resp_del.json()["rag_sincronizado"])
+        mock_del_tarea.assert_called_once_with("TEST101", tarea_id)
+
+        # 3. GET y PUT config_fallback + efecto en chat FALLBACK_DOCENTE
+        resp_cfg_get = self.client.get("/api/ramos/TEST101/config_fallback")
+        self.assertEqual(resp_cfg_get.status_code, 200)
+        self.assertTrue(resp_cfg_get.json()["habilitado"])
+
+        resp_cfg_put = self.client.put(
+            "/api/ramos/TEST101/config_fallback",
+            json={
+                "habilitado": True,
+                "permitir_escalar_profesor": False,
+                "mensaje_sin_respaldo": "Mensaje personalizado sin respaldo.",
+                "mensaje_fuera_de_foco": "Mensaje personalizado fuera de foco.",
+                "canal_alternativo": "Foro AULA",
+            },
+        )
+        self.assertEqual(resp_cfg_put.status_code, 200)
+        self.assertFalse(resp_cfg_put.json()["permitir_escalar_profesor"])
+
+        resp_cfg_parcial = self.client.put(
+            "/api/ramos/TEST101/config_fallback",
+            json={"canal_alternativo": "Foro AULA actualizado"},
+        )
+        self.assertEqual(resp_cfg_parcial.status_code, 200)
+        cfg_parcial = resp_cfg_parcial.json()
+        self.assertFalse(cfg_parcial["permitir_escalar_profesor"])
+        self.assertEqual(cfg_parcial["mensaje_sin_respaldo"], "Mensaje personalizado sin respaldo.")
+        self.assertEqual(cfg_parcial["canal_alternativo"], "Foro AULA actualizado")
+
+        with patch.object(
+            backend_app.rag_engine, "buscar_fragmentos_relevantes", return_value=[]
+        ):
+            resp_chat = self.client.post(
+                "/api/chat",
+                json={"codigo_ramo": "TEST101", "mensaje": "Receta de cazuela"},
+            )
+        eventos = _parsear_sse(resp_chat.text)
+        self.assertEqual(eventos[-1]["canal"], "FALLBACK_DOCENTE")
+        self.assertFalse(eventos[-1]["puede_escalar"])
+        texto_total = "".join(e.get("contenido", "") for e in eventos if e.get("tipo") == "token")
+        self.assertIn("Mensaje personalizado fuera de foco.", texto_total)
+        self.assertIn("Foro AULA actualizado", texto_total)
 
 
 if __name__ == "__main__":

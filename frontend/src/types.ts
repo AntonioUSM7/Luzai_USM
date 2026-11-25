@@ -47,6 +47,69 @@ export interface FaqJeff {
   respuesta: string;
 }
 
+export interface TareaJeff {
+  id: string;
+  titulo: string;
+  fecha_limite?: string;
+  formato_entrega?: string;
+  plataforma?: string;
+  palabras_clave: string[];
+  respuesta?: string;
+}
+
+export interface MetricaCanal {
+  canal: CanalChat;
+  total: number;
+}
+
+export interface MotivoFallback {
+  motivo: string;
+  total: number;
+}
+
+export interface DudaFrecuente {
+  texto: string;
+  total: number;
+  canal?: CanalChat;
+  variantes?: number;
+  topico?: string | null;
+  etiqueta?: string | null;
+}
+
+export interface EventoDia {
+  fecha: string;
+  total: number;
+}
+
+export interface AnaliticaResumen {
+  codigo_ramo: string;
+  desde: string;
+  hasta: string;
+  dias: number;
+  canal_filtro?: CanalChat | null;
+  total_eventos: number;
+  por_canal: MetricaCanal[];
+  por_motivo_fallback: MotivoFallback[];
+  top_dudas: DudaFrecuente[];
+  por_dia: EventoDia[];
+  latencia_promedio_ms: number;
+  eventos_con_error: number;
+}
+
+export interface EstadoRag {
+  codigo_ramo: string;
+  fragmentos_indexados: number;
+}
+
+export interface ConfigFallback {
+  codigo_ramo?: string;
+  habilitado: boolean;
+  permitir_escalar_profesor: boolean;
+  mensaje_sin_respaldo: string;
+  mensaje_fuera_de_foco: string;
+  canal_alternativo: string;
+}
+
 export interface ConsultaProfesor {
   id: string;
   codigo_ramo: string;

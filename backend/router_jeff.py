@@ -516,3 +516,154 @@ def eliminar_faq_jeff(codigo_ramo: str, faq_id: str) -> Dict[str, Any]:
         config["faqs_jeff"] = faqs
         _guardar_config_atomico(ruta, config)
         return dict(eliminada)
+
+
+def listar_tareas(codigo_ramo: str) -> List[Dict[str, Any]]:
+    """Lista las tareas y entregas configuradas para un ramo."""
+    codigo = codigo_ramo.upper()
+    ruta = DATA_DIR / codigo / "config.json"
+    with _CONFIG_LOCK:
+        if not ruta.exists():
+            raise FileNotFoundError(f"No existe config.json para el ramo {codigo}")
+        with open(ruta, "r", encoding="utf-8") as archivo:
+            config = json.load(archivo)
+    tareas = config.get("tareas", [])
+    return list(tareas) if isinstance(tareas, list) else []
+
+
+def _construir_tarea(
+    codigo: str,
+    titulo: str,
+    fecha_limite: Optional[str],
+    formato_entrega: Optional[str],
+    plataforma: Optional[str],
+    palabras_clave: Optional[List[str]],
+    respuesta: Optional[str],
+    tarea_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    titulo_limpio = (titulo or "").strip()
+    if not titulo_limpio:
+        raise ValueError("El título de la tarea no puede estar vacío")
+
+    claves = _limpiar_palabras_clave(palabras_clave, pregunta=titulo_limpio)
+    tarea: Dict[str, Any] = {
+        "id": tarea_id or f"tarea_{uuid.uuid4().hex[:8]}",
+        "titulo": titulo_limpio,
+        "palabras_clave": claves,
+    }
+    if fecha_limite and fecha_limite.strip():
+        tarea["fecha_limite"] = fecha_limite.strip()
+    if formato_entrega and formato_entrega.strip():
+        tarea["formato_entrega"] = formato_entrega.strip()
+    if plataforma and plataforma.strip():
+        tarea["plataforma"] = plataforma.strip()
+    if respuesta and respuesta.strip():
+        tarea["respuesta"] = respuesta.strip()
+    return tarea
+
+
+def agregar_tarea(
+    codigo_ramo: str,
+    titulo: str,
+    fecha_limite: Optional[str] = None,
+    formato_entrega: Optional[str] = None,
+    plataforma: Optional[str] = None,
+    palabras_clave: Optional[List[str]] = None,
+    respuesta: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Agrega una tarea al config.json del ramo de forma atómica."""
+    codigo = codigo_ramo.upper()
+    ruta = DATA_DIR / codigo / "config.json"
+    nueva = _construir_tarea(
+        codigo, titulo, fecha_limite, formato_entrega, plataforma, palabras_clave, respuesta
+    )
+
+    with _CONFIG_LOCK:
+        if not ruta.exists():
+            raise FileNotFoundError(f"No existe config.json para el ramo {codigo}")
+        with open(ruta, "r", encoding="utf-8") as archivo:
+            config = json.load(archivo)
+
+        tareas = config.setdefault("tareas", [])
+        if not isinstance(tareas, list):
+            tareas = []
+            config["tareas"] = tareas
+        tareas.append(nueva)
+        _guardar_config_atomico(ruta, config)
+
+    return dict(nueva)
+
+
+def actualizar_tarea(
+    codigo_ramo: str,
+    tarea_id: str,
+    titulo: Optional[str] = None,
+    fecha_limite: Optional[str] = None,
+    formato_entrega: Optional[str] = None,
+    plataforma: Optional[str] = None,
+    palabras_clave: Optional[List[str]] = None,
+    respuesta: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Actualiza una tarea existente conservando los campos omitidos."""
+    codigo = codigo_ramo.upper()
+    ruta = DATA_DIR / codigo / "config.json"
+
+    with _CONFIG_LOCK:
+        if not ruta.exists():
+            raise FileNotFoundError(f"No existe config.json para el ramo {codigo}")
+        with open(ruta, "r", encoding="utf-8") as archivo:
+            config = json.load(archivo)
+
+        tareas = config.get("tareas", [])
+        if not isinstance(tareas, list):
+            tareas = []
+        indice = next((i for i, t in enumerate(tareas) if t.get("id") == tarea_id), None)
+        if indice is None:
+            raise KeyError(f"Tarea '{tarea_id}' no encontrada en {codigo}")
+
+        anterior = tareas[indice]
+
+        def valor(nuevo: Optional[str], clave: str) -> Optional[str]:
+            if nuevo is not None and str(nuevo).strip():
+                return nuevo
+            return anterior.get(clave)
+
+        actualizada = _construir_tarea(
+            codigo,
+            valor(titulo, "titulo") or "",
+            valor(fecha_limite, "fecha_limite"),
+            valor(formato_entrega, "formato_entrega"),
+            valor(plataforma, "plataforma"),
+            palabras_clave if palabras_clave is not None else anterior.get("palabras_clave", []),
+            valor(respuesta, "respuesta"),
+            tarea_id=tarea_id,
+        )
+        tareas[indice] = actualizada
+        config["tareas"] = tareas
+        _guardar_config_atomico(ruta, config)
+
+    return dict(actualizada)
+
+
+def eliminar_tarea(codigo_ramo: str, tarea_id: str) -> Dict[str, Any]:
+    """Elimina una tarea del config.json del ramo de forma atómica."""
+    codigo = codigo_ramo.upper()
+    ruta = DATA_DIR / codigo / "config.json"
+
+    with _CONFIG_LOCK:
+        if not ruta.exists():
+            raise FileNotFoundError(f"No existe config.json para el ramo {codigo}")
+        with open(ruta, "r", encoding="utf-8") as archivo:
+            config = json.load(archivo)
+
+        tareas = config.get("tareas", [])
+        if not isinstance(tareas, list):
+            tareas = []
+        indice = next((i for i, t in enumerate(tareas) if t.get("id") == tarea_id), None)
+        if indice is None:
+            raise KeyError(f"Tarea '{tarea_id}' no encontrada en {codigo}")
+
+        eliminada = tareas.pop(indice)
+        config["tareas"] = tareas
+        _guardar_config_atomico(ruta, config)
+        return dict(eliminada)

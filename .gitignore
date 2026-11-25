@@ -52,3 +52,6 @@ Thumbs.db
 # Datos ramos
 backend/data/ramos/*/documentos/*
 !backend/data/ramos/*/documentos/.gitkeep
+
+# Respaldo local de artefactos de prueba movidos fuera de backend/
+tests/datos_prueba_respaldo/

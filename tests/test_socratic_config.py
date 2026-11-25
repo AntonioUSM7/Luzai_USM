@@ -9,7 +9,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+TESTS_DIR = Path(__file__).resolve().parent
+if str(TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(TESTS_DIR))
+
+from _test_env import asegurar_backend_en_path, parches_aislamiento_datos
+
+asegurar_backend_en_path()
 
 try:
     import rag_engine  # noqa: F401
@@ -90,10 +96,15 @@ class TestQwenYConfigSocratica(unittest.TestCase):
                 indent=2,
             )
 
-        self.patchers = [
-            patch.object(backend_app, "BASE_DATA_DIR", self.data_dir),
-            patch.object(backend_app.router_jeff, "DATA_DIR", self.data_dir),
-        ]
+        self.analytics_dir = Path(self.tmpdir.name) / "analytics"
+        self.patchers = parches_aislamiento_datos(
+            self.data_dir,
+            self.analytics_dir,
+            backend_app=backend_app,
+            router_jeff=backend_app.router_jeff,
+            rag_engine=backend_app.rag_engine,
+            analytics_store=backend_app.analytics_store,
+        )
         for p in self.patchers:
             p.start()
         self.client = TestClient(backend_app.app)
