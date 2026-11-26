@@ -329,6 +329,44 @@ class TestIntegracionChatAnalitica(unittest.TestCase):
             self.client.get("/api/ramos/NOEXISTE/analytics/resumen").status_code, 404
         )
 
+        # Eliminación selectiva de preguntas poco frecuentes vía API
+        dudas = data["top_dudas"]
+        ids_poco_frecuentes = [d["id"] for d in dudas if d["total"] == 1]
+        self.assertEqual(len(ids_poco_frecuentes), 2)
+
+        resp_del = self.client.post(
+            "/api/ramos/TESTANA/analytics/eliminar-dudas",
+            json={"ids": ids_poco_frecuentes, "dias": 30},
+        )
+        self.assertEqual(resp_del.status_code, 200)
+        del_data = resp_del.json()
+        self.assertEqual(del_data["status"], "ok")
+        self.assertEqual(del_data["eliminados"], 2)
+        self.assertEqual(del_data["grupos_eliminados"], 2)
+
+        resp_resumen_post = self.client.get("/api/ramos/TESTANA/analytics/resumen?dias=30")
+        self.assertEqual(resp_resumen_post.status_code, 200)
+        data_post = resp_resumen_post.json()
+        self.assertEqual(data_post["total_eventos"], 2)
+        self.assertEqual(len(data_post["top_dudas"]), 1)
+        self.assertIn("vlan", data_post["top_dudas"][0]["texto"].lower())
+
+        # Validaciones de endpoint de eliminación
+        self.assertEqual(
+            self.client.post(
+                "/api/ramos/TESTANA/analytics/eliminar-dudas",
+                json={"ids": [], "dias": 30},
+            ).status_code,
+            422,
+        )
+        self.assertEqual(
+            self.client.post(
+                "/api/ramos/NOEXISTE/analytics/eliminar-dudas",
+                json={"ids": ["abc"], "dias": 30},
+            ).status_code,
+            404,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,6 @@
 """Analítica anónima por ramo: registro JSONL, agrupación de dudas y resumen agregado."""
 
+import hashlib
 import json
 import re
 import threading
@@ -225,27 +226,31 @@ def leer_eventos(codigo_ramo: str, dias: int = DIAS_DEFAULT) -> List[Dict[str, A
     return eventos
 
 
-def _top_dudas(
+def _id_grupo_lexico(canal: str, tokens: Set[str], clave_norm: str) -> str:
+    base = "|".join(sorted(tokens)) if tokens else f"raw:{clave_norm}"
+    digest = hashlib.sha1(f"{canal}:{base}".encode("utf-8")).hexdigest()[:12]
+    return f"lexico:{canal}:{digest}"
+
+
+def _agrupar_dudas(
     eventos: List[Dict[str, Any]],
     codigo_ramo: str = "",
     canal: Optional[str] = None,
-    limite: int = TOP_DUDAS_DEFAULT,
 ) -> List[Dict[str, Any]]:
     """
-    Agrupa preguntas frecuentes:
+    Agrupa preguntas frecuentes y conserva los índices de eventos de cada grupo:
     - En eventos con tópico (JEFF_ADMIN): consolida por tópico con etiqueta legible.
     - En Tutor Socrático / Fallback: agrupa variantes equivalentes por similitud léxica sin stopwords.
     """
     etiquetas_topicos = _etiquetas_topicos_ramo(codigo_ramo) if codigo_ramo else {}
-    filtrados = [
-        e for e in eventos if not canal or e.get("canal") == canal
-    ]
-
     grupos_topico: Dict[str, Dict[str, Any]] = {}
     grupos_lexicos: List[Dict[str, Any]] = []
 
-    for evento in filtrados:
+    for idx, evento in enumerate(eventos):
         canal_ev = evento.get("canal") or "TUTOR_SOCRATICO"
+        if canal and canal_ev != canal:
+            continue
+
         topico = str(evento.get("topico") or "").strip()
         categoria = str(evento.get("categoria") or "").strip()
         pregunta = str(evento.get("pregunta_anonimizada") or "").strip()
@@ -258,15 +263,18 @@ def _top_dudas(
             etiqueta = etiquetas_topicos.get(topico) or categoria or topico
             if actual is None:
                 grupos_topico[clave] = {
+                    "id": f"topico:{clave}",
                     "texto": pregunta or etiqueta,
                     "total": 1,
                     "canal": canal_ev,
                     "topico": topico,
                     "etiqueta": etiqueta,
                     "_textos": Counter([pregunta]) if pregunta else Counter(),
+                    "_indices": {idx},
                 }
             else:
                 actual["total"] += 1
+                actual["_indices"].add(idx)
                 if pregunta:
                     actual["_textos"][pregunta] += 1
             continue
@@ -290,27 +298,42 @@ def _top_dudas(
                     break
 
         if mejor_grupo is None:
+            clave_norm = _normalizar_texto(pregunta)
             grupos_lexicos.append({
+                "id": _id_grupo_lexico(canal_ev, tokens, clave_norm),
                 "texto": pregunta or "(sin texto)",
                 "total": 1,
                 "canal": canal_ev,
                 "topico": None,
                 "etiqueta": ", ".join(sorted(tokens)[:4]) if tokens else None,
                 "_tokens": set(tokens),
-                "_clave_norm": _normalizar_texto(pregunta),
+                "_clave_norm": clave_norm,
                 "_textos": Counter([pregunta]) if pregunta else Counter(),
+                "_indices": {idx},
             })
         else:
             mejor_grupo["total"] += 1
+            mejor_grupo["_indices"].add(idx)
             if pregunta:
                 mejor_grupo["_textos"][pregunta] += 1
 
-    todos = list(grupos_topico.values()) + grupos_lexicos
+    return list(grupos_topico.values()) + grupos_lexicos
+
+
+def _top_dudas(
+    eventos: List[Dict[str, Any]],
+    codigo_ramo: str = "",
+    canal: Optional[str] = None,
+    limite: int = TOP_DUDAS_DEFAULT,
+) -> List[Dict[str, Any]]:
+    """Devuelve las dudas agrupadas ordenadas por frecuencia."""
+    todos = _agrupar_dudas(eventos, codigo_ramo=codigo_ramo, canal=canal)
     resultado: List[Dict[str, Any]] = []
     for grupo in todos:
         textos_counter: Counter = grupo["_textos"]
         texto_rep = textos_counter.most_common(1)[0][0] if textos_counter else grupo["texto"]
         item: Dict[str, Any] = {
+            "id": grupo["id"],
             "texto": texto_rep,
             "total": grupo["total"],
             "canal": grupo["canal"],
@@ -324,6 +347,70 @@ def _top_dudas(
 
     resultado.sort(key=lambda item: (item["total"], item["variantes"]), reverse=True)
     return resultado[: max(1, min(int(limite or TOP_DUDAS_DEFAULT), TOP_DUDAS_MAX))]
+
+
+def eliminar_dudas(
+    codigo_ramo: str,
+    ids_grupos: List[str],
+    dias: int = DIAS_DEFAULT,
+    canal: Optional[str] = None,
+) -> Dict[str, int]:
+    """Elimina del registro JSONL los eventos pertenecientes a los grupos seleccionados."""
+    ids_objetivo = {str(gid).strip() for gid in (ids_grupos or []) if str(gid).strip()}
+    if not ids_objetivo:
+        return {"eliminados": 0, "grupos_eliminados": 0}
+
+    dias = max(1, min(int(dias or DIAS_DEFAULT), DIAS_MAX))
+    desde = datetime.now(timezone.utc) - timedelta(days=dias)
+    canal_filtro = canal if canal in CANALES else None
+    ruta = _ruta_eventos(codigo_ramo)
+    if not ruta.exists():
+        return {"eliminados": 0, "grupos_eliminados": 0}
+
+    with _STORE_LOCK:
+        with open(ruta, "r", encoding="utf-8") as archivo:
+            lineas = archivo.readlines()
+
+        eventos_rango: List[Dict[str, Any]] = []
+        mapa_linea_por_evento: List[int] = []
+        for idx_linea, linea in enumerate(lineas):
+            contenido = linea.strip()
+            if not contenido:
+                continue
+            try:
+                evento = json.loads(contenido)
+            except json.JSONDecodeError:
+                continue
+            fecha = _parsear_fecha(evento.get("timestamp"))
+            if fecha is None or fecha < desde:
+                continue
+            if canal_filtro and (evento.get("canal") or "TUTOR_SOCRATICO") != canal_filtro:
+                continue
+            eventos_rango.append(evento)
+            mapa_linea_por_evento.append(idx_linea)
+
+        grupos = _agrupar_dudas(eventos_rango, codigo_ramo=codigo_ramo, canal=canal_filtro)
+        lineas_a_borrar: Set[int] = set()
+        grupos_eliminados = 0
+        for grupo in grupos:
+            if grupo["id"] in ids_objetivo:
+                grupos_eliminados += 1
+                for idx_ev in grupo["_indices"]:
+                    lineas_a_borrar.add(mapa_linea_por_evento[idx_ev])
+
+        if not lineas_a_borrar:
+            return {"eliminados": 0, "grupos_eliminados": 0}
+
+        nuevas_lineas = [
+            linea for idx_linea, linea in enumerate(lineas) if idx_linea not in lineas_a_borrar
+        ]
+        with open(ruta, "w", encoding="utf-8") as archivo:
+            archivo.writelines(nuevas_lineas)
+
+    return {
+        "eliminados": len(lineas_a_borrar),
+        "grupos_eliminados": grupos_eliminados,
+    }
 
 
 def resumen(

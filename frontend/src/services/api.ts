@@ -515,6 +515,36 @@ export async function obtenerAnaliticaRamo(
 }
 
 /**
+ * Elimina grupos de preguntas seleccionados de la analítica anónima del ramo.
+ */
+export async function eliminarDudasAnalitica(
+  codigoRamo: string,
+  ids: string[],
+  dias = 30,
+  canal?: CanalChat
+): Promise<{ status: string; eliminados: number; grupos_eliminados: number }> {
+  const respuesta = await fetch(
+    `${API_URL}/api/ramos/${codigoRamo}/analytics/eliminar-dudas`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ids,
+        dias,
+        canal: canal || null,
+      }),
+    }
+  );
+  if (!respuesta.ok) {
+    const detalle = await respuesta.json().catch(() => ({}));
+    throw new Error(
+      detalle.detail || 'Error al eliminar las preguntas seleccionadas'
+    );
+  }
+  return respuesta.json();
+}
+
+/**
  * Obtiene la cantidad de fragmentos vectorizados en ChromaDB para un ramo.
  */
 export async function obtenerEstadoRag(codigoRamo: string): Promise<EstadoRag> {

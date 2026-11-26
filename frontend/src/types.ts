@@ -68,6 +68,7 @@ export interface MotivoFallback {
 }
 
 export interface DudaFrecuente {
+  id?: string;
   texto: string;
   total: number;
   canal?: CanalChat;

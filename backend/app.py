@@ -732,14 +732,17 @@ def eliminar_tarea_ramo(codigo_ramo: str, tarea_id: str):
     return {"status": "ok", "tarea": tarea, "rag_sincronizado": rag_sincronizado}
 
 
-@app.get("/api/ramos/{codigo_ramo}/analytics/resumen")
-def obtener_analitica_ramo(
+class EliminarDudasAnalitica(BaseModel):
+    ids: List[str] = Field(..., min_length=1)
+    dias: int = analytics_store.DIAS_DEFAULT
+    canal: Optional[str] = None
+
+
+def _validar_ramo_y_filtros_analitica(
     codigo_ramo: str,
-    dias: int = analytics_store.DIAS_DEFAULT,
-    canal: Optional[str] = None,
-    limite: int = analytics_store.TOP_DUDAS_DEFAULT,
-):
-    """Devuelve métricas agregadas y anónimas de uso del tutor para el ramo."""
+    dias: int,
+    canal: Optional[str],
+) -> str:
     codigo = codigo_ramo.upper()
     if not (BASE_DATA_DIR / codigo / "config.json").exists():
         raise HTTPException(status_code=404, detail="Ramo no encontrado")
@@ -753,12 +756,40 @@ def obtener_analitica_ramo(
             status_code=400,
             detail=f"canal debe ser uno de: {', '.join(analytics_store.CANALES)}",
         )
+    return codigo
+
+
+@app.get("/api/ramos/{codigo_ramo}/analytics/resumen")
+def obtener_analitica_ramo(
+    codigo_ramo: str,
+    dias: int = analytics_store.DIAS_DEFAULT,
+    canal: Optional[str] = None,
+    limite: int = analytics_store.TOP_DUDAS_DEFAULT,
+):
+    """Devuelve métricas agregadas y anónimas de uso del tutor para el ramo."""
+    codigo = _validar_ramo_y_filtros_analitica(codigo_ramo, dias, canal)
     if limite < 1 or limite > analytics_store.TOP_DUDAS_MAX:
         raise HTTPException(
             status_code=400,
             detail=f"limite debe estar entre 1 y {analytics_store.TOP_DUDAS_MAX}",
         )
     return analytics_store.resumen(codigo, dias=dias, canal=canal, limite=limite)
+
+
+@app.post("/api/ramos/{codigo_ramo}/analytics/eliminar-dudas")
+def eliminar_dudas_analitica(
+    codigo_ramo: str,
+    payload: EliminarDudasAnalitica,
+):
+    """Elimina del registro anónimo los grupos de preguntas seleccionados por el docente."""
+    codigo = _validar_ramo_y_filtros_analitica(codigo_ramo, payload.dias, payload.canal)
+    resultado = analytics_store.eliminar_dudas(
+        codigo,
+        ids_grupos=payload.ids,
+        dias=payload.dias,
+        canal=payload.canal,
+    )
+    return {"status": "ok", **resultado}
 
 
 _ESTILOS_SOCRATICOS = {

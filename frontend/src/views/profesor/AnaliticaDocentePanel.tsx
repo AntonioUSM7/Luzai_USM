@@ -8,9 +8,13 @@ import {
   PlusCircle,
   RefreshCw,
   ShieldCheck,
+  Trash2,
 } from 'lucide-react';
 import { AnaliticaResumen, CanalChat } from '../../types';
-import { obtenerAnaliticaRamo } from '../../services/api';
+import {
+  eliminarDudasAnalitica,
+  obtenerAnaliticaRamo,
+} from '../../services/api';
 
 interface AnaliticaDocentePanelProps {
   codigoRamo: string;
@@ -45,6 +49,8 @@ export const AnaliticaDocentePanel: React.FC<AnaliticaDocentePanelProps> = ({
   const [canalFiltro, setCanalFiltro] = useState<'' | CanalChat>('');
   const [resumen, setResumen] = useState<AnaliticaResumen | null>(null);
   const [cargando, setCargando] = useState<boolean>(false);
+  const [eliminando, setEliminando] = useState<boolean>(false);
+  const [seleccionadas, setSeleccionadas] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
 
   const cargar = async (
@@ -54,14 +60,23 @@ export const AnaliticaDocentePanel: React.FC<AnaliticaDocentePanelProps> = ({
     setCargando(true);
     setError(null);
     try {
-      setResumen(
-        await obtenerAnaliticaRamo(
-          codigoRamo,
-          rango,
-          canal || undefined,
-          10
-        )
+      const data = await obtenerAnaliticaRamo(
+        codigoRamo,
+        rango,
+        canal || undefined,
+        10
       );
+      setResumen(data);
+      const idsVigentes = new Set(
+        data.top_dudas.map((d) => d.id).filter((id): id is string => Boolean(id))
+      );
+      setSeleccionadas((prev) => {
+        const siguiente = new Set<string>();
+        prev.forEach((id) => {
+          if (idsVigentes.has(id)) siguiente.add(id);
+        });
+        return siguiente;
+      });
     } catch (err) {
       setError(
         err instanceof Error ? err.message : 'No se pudo cargar la analítica del ramo.'
@@ -72,8 +87,73 @@ export const AnaliticaDocentePanel: React.FC<AnaliticaDocentePanelProps> = ({
   };
 
   useEffect(() => {
+    setSeleccionadas(new Set());
     cargar(dias, canalFiltro);
   }, [codigoRamo, dias, canalFiltro]);
+
+  const dudasConId = (resumen?.top_dudas ?? []).filter(
+    (d): d is typeof d & { id: string } => Boolean(d.id)
+  );
+  const dudasPocoFrecuentes = dudasConId.filter((d) => d.total <= 1);
+  const todasSeleccionadas =
+    dudasConId.length > 0 && dudasConId.every((d) => seleccionadas.has(d.id));
+
+  const toggleSeleccion = (id: string) => {
+    setSeleccionadas((prev) => {
+      const siguiente = new Set(prev);
+      if (siguiente.has(id)) {
+        siguiente.delete(id);
+      } else {
+        siguiente.add(id);
+      }
+      return siguiente;
+    });
+  };
+
+  const toggleSeleccionarTodas = () => {
+    if (todasSeleccionadas) {
+      setSeleccionadas(new Set());
+    } else {
+      setSeleccionadas(new Set(dudasConId.map((d) => d.id)));
+    }
+  };
+
+  const seleccionarPocoFrecuentes = () => {
+    setSeleccionadas(new Set(dudasPocoFrecuentes.map((d) => d.id)));
+  };
+
+  const eliminarSeleccionadas = async () => {
+    if (seleccionadas.size === 0 || eliminando) return;
+    const cantidad = seleccionadas.size;
+    if (
+      !window.confirm(
+        `¿Eliminar ${cantidad} pregunta(s) seleccionada(s) de la analítica anónima? Esta acción no se puede deshacer.`
+      )
+    ) {
+      return;
+    }
+
+    setEliminando(true);
+    setError(null);
+    try {
+      await eliminarDudasAnalitica(
+        codigoRamo,
+        Array.from(seleccionadas),
+        dias,
+        canalFiltro || undefined
+      );
+      setSeleccionadas(new Set());
+      await cargar(dias, canalFiltro);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'No se pudieron eliminar las preguntas seleccionadas.'
+      );
+    } finally {
+      setEliminando(false);
+    }
+  };
 
   const total = resumen?.total_eventos ?? 0;
   const canalJeff =
@@ -359,54 +439,110 @@ export const AnaliticaDocentePanel: React.FC<AnaliticaDocentePanelProps> = ({
               </div>
             </div>
             {resumen?.top_dudas.length ? (
-              <ol className="divide-y divide-slate-100">
-                {resumen.top_dudas.map((duda, indice) => (
-                  <li
-                    key={`${duda.texto}-${indice}`}
-                    className="px-5 py-3.5 flex items-start gap-3"
-                  >
-                    <span className="font-mono text-[10px] font-bold w-5 h-5 rounded-sm bg-slate-100 text-slate-500 flex items-center justify-center shrink-0 mt-0.5">
-                      {indice + 1}
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-xs font-medium text-slate-800 leading-relaxed">
-                        {duda.texto}
-                      </p>
-                      <div className="flex flex-wrap items-center gap-2 mt-1">
-                        <span className="font-mono text-[10px] text-slate-400">
-                          {etiquetaCanal(duda.canal || 'TUTOR_SOCRATICO')}
-                        </span>
-                        {duda.etiqueta && (
-                          <span className="font-mono text-[10px] px-1.5 py-0.5 rounded-sm bg-slate-100 text-slate-600">
-                            {duda.etiqueta}
-                          </span>
-                        )}
-                        {typeof duda.variantes === 'number' && duda.variantes > 1 && (
-                          <span className="font-mono text-[10px] px-1.5 py-0.5 rounded-sm bg-blue-50 text-[#234E86]">
-                            {duda.variantes} variantes
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2.5 shrink-0">
-                      {onGuardarEnJeff && duda.canal !== 'JEFF_ADMIN' && (
+              <>
+                {dudasConId.length > 0 && (
+                  <div className="px-5 py-2.5 bg-slate-50/80 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <label className="inline-flex items-center gap-2 text-xs text-slate-600 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={todasSeleccionadas}
+                          onChange={toggleSeleccionarTodas}
+                          className="h-3.5 w-3.5 rounded-sm border-slate-300 text-[#234E86] focus:ring-[#234E86]"
+                        />
+                        <span>Seleccionar todas</span>
+                      </label>
+                      {dudasPocoFrecuentes.length > 0 && (
                         <button
                           type="button"
-                          onClick={() => onGuardarEnJeff(duda.texto)}
-                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-sm border border-blue-200 bg-blue-50/70 text-[11px] font-semibold text-[#234E86] hover:bg-[#234E86] hover:text-white transition"
-                          title="Crear una Pregunta Guardada de Jeff a partir de esta duda"
+                          onClick={seleccionarPocoFrecuentes}
+                          className="text-[11px] font-medium text-[#234E86] hover:underline"
                         >
-                          <PlusCircle className="w-3 h-3" />
-                          <span>Guardar en Jeff</span>
+                          Seleccionar poco frecuentes ({dudasPocoFrecuentes.length})
                         </button>
                       )}
-                      <span className="font-display text-sm font-bold text-[#234E86] min-w-[1.5rem] text-right">
-                        {formatoNumero.format(duda.total)}
-                      </span>
                     </div>
-                  </li>
-                ))}
-              </ol>
+                    {seleccionadas.size > 0 && (
+                      <button
+                        type="button"
+                        onClick={eliminarSeleccionadas}
+                        disabled={eliminando}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm border border-red-200 bg-red-50 text-[11px] font-semibold text-red-700 hover:bg-red-600 hover:text-white disabled:opacity-50 transition"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>
+                          {eliminando
+                            ? 'Eliminando...'
+                            : `Eliminar seleccionadas (${seleccionadas.size})`}
+                        </span>
+                      </button>
+                    )}
+                  </div>
+                )}
+                <ol className="divide-y divide-slate-100">
+                  {resumen.top_dudas.map((duda, indice) => {
+                    const idDuda = duda.id || '';
+                    const estaSeleccionada = idDuda ? seleccionadas.has(idDuda) : false;
+                    return (
+                      <li
+                        key={`${idDuda || duda.texto}-${indice}`}
+                        className={`px-5 py-3.5 flex items-start gap-3 transition ${
+                          estaSeleccionada ? 'bg-blue-50/40' : ''
+                        }`}
+                      >
+                        {idDuda && (
+                          <input
+                            type="checkbox"
+                            checked={estaSeleccionada}
+                            onChange={() => toggleSeleccion(idDuda)}
+                            aria-label={`Seleccionar pregunta: ${duda.texto}`}
+                            className="h-4 w-4 mt-0.5 rounded-sm border-slate-300 text-[#234E86] focus:ring-[#234E86] cursor-pointer shrink-0"
+                          />
+                        )}
+                        <span className="font-mono text-[10px] font-bold w-5 h-5 rounded-sm bg-slate-100 text-slate-500 flex items-center justify-center shrink-0 mt-0.5">
+                          {indice + 1}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-medium text-slate-800 leading-relaxed">
+                            {duda.texto}
+                          </p>
+                          <div className="flex flex-wrap items-center gap-2 mt-1">
+                            <span className="font-mono text-[10px] text-slate-400">
+                              {etiquetaCanal(duda.canal || 'TUTOR_SOCRATICO')}
+                            </span>
+                            {duda.etiqueta && (
+                              <span className="font-mono text-[10px] px-1.5 py-0.5 rounded-sm bg-slate-100 text-slate-600">
+                                {duda.etiqueta}
+                              </span>
+                            )}
+                            {typeof duda.variantes === 'number' && duda.variantes > 1 && (
+                              <span className="font-mono text-[10px] px-1.5 py-0.5 rounded-sm bg-blue-50 text-[#234E86]">
+                                {duda.variantes} variantes
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2.5 shrink-0">
+                          {onGuardarEnJeff && duda.canal !== 'JEFF_ADMIN' && (
+                            <button
+                              type="button"
+                              onClick={() => onGuardarEnJeff(duda.texto)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-sm border border-blue-200 bg-blue-50/70 text-[11px] font-semibold text-[#234E86] hover:bg-[#234E86] hover:text-white transition"
+                              title="Crear una Pregunta Guardada de Jeff a partir de esta duda"
+                            >
+                              <PlusCircle className="w-3 h-3" />
+                              <span>Guardar en Jeff</span>
+                            </button>
+                          )}
+                          <span className="font-display text-sm font-bold text-[#234E86] min-w-[1.5rem] text-right">
+                            {formatoNumero.format(duda.total)}
+                          </span>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ol>
+              </>
             ) : (
               <p className="px-5 py-8 text-xs text-slate-500 text-center">
                 No hay preguntas registradas para este filtro.
