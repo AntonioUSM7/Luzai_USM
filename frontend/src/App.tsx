@@ -7,8 +7,33 @@ import { DocenteView } from './views/profesor/DocenteView';
 import { Ramo, Usuario } from './types';
 import { obtenerRamos } from './services/api';
 
+const SESSION_STORAGE_KEY = 'luzai_usuario';
+
+function cargarUsuarioGuardado(): Usuario | null {
+  try {
+    const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (
+      parsed &&
+      typeof parsed.nombre === 'string' &&
+      (parsed.rol === 'alumno' || parsed.rol === 'docente')
+    ) {
+      return { nombre: parsed.nombre, rol: parsed.rol };
+    }
+    localStorage.removeItem(SESSION_STORAGE_KEY);
+  } catch {
+    try {
+      localStorage.removeItem(SESSION_STORAGE_KEY);
+    } catch {
+      // Ignora errores de acceso a almacenamiento
+    }
+  }
+  return null;
+}
+
 export function App() {
-  const [usuario, setUsuario] = useState<Usuario | null>(null);
+  const [usuario, setUsuario] = useState<Usuario | null>(cargarUsuarioGuardado);
   const [ramos, setRamos] = useState<Ramo[]>([]);
   const [ramoActivo, setRamoActivo] = useState<Ramo | null>(null);
   const [errorConexion, setErrorConexion] = useState<string | null>(null);
@@ -29,9 +54,28 @@ export function App() {
     cargarDatos();
   }, []);
 
+  const manejarLogin = (nuevoUsuario: Usuario) => {
+    try {
+      localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(nuevoUsuario));
+    } catch {
+      // Ignora errores de acceso a almacenamiento
+    }
+    setUsuario(nuevoUsuario);
+  };
+
+  const manejarCerrarSesion = () => {
+    try {
+      localStorage.removeItem(SESSION_STORAGE_KEY);
+    } catch {
+      // Ignora errores de acceso a almacenamiento
+    }
+    setUsuario(null);
+    setRamoActivo(null);
+  };
+
   // Vista 1: Login de ingreso
   if (!usuario) {
-    return <Login onLogin={setUsuario} />;
+    return <Login onLogin={manejarLogin} />;
   }
 
   // Vista 2: Portal una vez autenticado
@@ -44,7 +88,7 @@ export function App() {
         sidebarVisible={sidebarVisible}
         onToggleSidebar={() => setSidebarVisible((prev) => !prev)}
         onSeleccionarRamo={setRamoActivo}
-        onCerrarSesion={() => setUsuario(null)}
+        onCerrarSesion={manejarCerrarSesion}
       />
 
       {/* Botón flotante a la izquierda cuando la barra lateral está oculta */}
