@@ -4,6 +4,8 @@ import os
 import re
 import threading
 import unicodedata
+import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
@@ -167,6 +169,45 @@ def extraer_documento_markdown(ruta_pdf: Path, codigo_ramo: str) -> List[Dict[st
     return paginas
 
 
+EXTENSIONES_INDEXABLES = {".pdf", ".docx", ".txt", ".md"}
+
+
+def extraer_documento_docx(ruta_docx: Path) -> List[Dict[str, Any]]:
+    """Extrae párrafos de un DOCX usando solo la librería estándar."""
+    ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    try:
+        with zipfile.ZipFile(ruta_docx) as archivo:
+            xml = archivo.read("word/document.xml")
+    except (OSError, KeyError, zipfile.BadZipFile) as exc:
+        logger.error("No se pudo leer %s como DOCX: %s", ruta_docx.name, exc)
+        return []
+
+    try:
+        raiz = ET.fromstring(xml)
+    except ET.ParseError as exc:
+        logger.error("XML inválido en %s: %s", ruta_docx.name, exc)
+        return []
+
+    parrafos: List[str] = []
+    for parrafo in raiz.iter(f"{ns}p"):
+        textos = [nodo.text for nodo in parrafo.iter(f"{ns}t") if nodo.text]
+        if textos:
+            parrafos.append("".join(textos).strip())
+
+    texto = "\n\n".join(p for p in parrafos if p)
+    return [{"pagina": 1, "texto": texto}] if texto else []
+
+
+def extraer_documento_texto(ruta_texto: Path) -> List[Dict[str, Any]]:
+    """Extrae el contenido de un archivo de texto plano o Markdown."""
+    try:
+        texto = ruta_texto.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError as exc:
+        logger.error("No se pudo leer %s: %s", ruta_texto.name, exc)
+        return []
+    return [{"pagina": 1, "texto": texto}] if texto else []
+
+
 def _dividir_unidades(texto: str) -> List[str]:
     """Separa el Markdown en bloques semánticos (encabezados, párrafos, código)."""
     unidades: List[str] = []
@@ -276,28 +317,35 @@ def indexar_documento(ruta_archivo: Path, codigo_ramo: str, carpeta: str) -> Dic
 
 def _indexar_documento(ruta_archivo: Path, codigo_ramo: str, carpeta: str) -> Dict[str, Any]:
     """
-    Lee un PDF, lo fragmenta, calcula embeddings y lo almacena en la colección
-    vectorial del ramo. Es idempotente: reemplaza los vectores previos del archivo.
+    Lee un documento soportado, lo fragmenta, calcula embeddings y lo almacena
+    en la colección vectorial del ramo. Es idempotente por archivo.
     """
     codigo = codigo_ramo.upper()
-    if ruta_archivo.suffix.lower() != ".pdf":
+    sufijo = ruta_archivo.suffix.lower()
+    if sufijo not in EXTENSIONES_INDEXABLES:
         return {
             "status": "omitido",
             "archivo": ruta_archivo.name,
             "chunks_indexados": 0,
-            "motivo": "Solo se indexan archivos PDF",
+            "motivo": "Solo se indexan PDF, DOCX, TXT y Markdown",
         }
 
     coleccion = obtener_cliente_chroma(codigo)
     eliminar_documento_vectorial(ruta_archivo.name, codigo, carpeta, coleccion=coleccion)
 
-    paginas = extraer_documento_markdown(ruta_archivo, codigo)
+    if sufijo == ".pdf":
+        paginas = extraer_documento_markdown(ruta_archivo, codigo)
+    elif sufijo == ".docx":
+        paginas = extraer_documento_docx(ruta_archivo)
+    else:
+        paginas = extraer_documento_texto(ruta_archivo)
+
     if not paginas:
         return {
             "status": "sin_texto",
             "archivo": ruta_archivo.name,
             "chunks_indexados": 0,
-            "motivo": "No se extrajo texto (posible PDF escaneado)",
+            "motivo": "No se extrajo texto del documento",
         }
 
     ids: List[str] = []
@@ -515,8 +563,7 @@ def buscar_fragmentos_planificacion(
     if total == 0 or not query.strip():
         return []
 
-    # Recuperar candidatos globales y filtrar los pertenecientes a Planificacion/ o faqs_jeff
-    candidatos = buscar_fragmentos(query, codigo_ramo, top_k=min(max(top_k * 5, 25), total))
+    candidatos = buscar_fragmentos(query, codigo_ramo, top_k=total)
     resultados: List[Dict[str, Any]] = []
     vistos = set()
 
@@ -526,6 +573,7 @@ def buscar_fragmentos_planificacion(
             carpeta.lower() == "planificacion"
             or carpeta.lower().startswith("planificacion/")
             or carpeta == CARPETA_FAQS_JEFF
+            or carpeta == CARPETA_TAREAS_JEFF
         )
         score = frag.get("score")
         if not es_plan:
@@ -543,6 +591,8 @@ def buscar_fragmentos_planificacion(
 
 CARPETA_FAQS_JEFF = "faqs_jeff"
 FUENTE_FAQS_JEFF = "Preguntas Guardadas (Jeff)"
+CARPETA_TAREAS_JEFF = "tareas_jeff"
+FUENTE_TAREAS_JEFF = "Tareas y Entregas (Jeff)"
 
 
 def _construir_texto_faq(faq: Dict[str, Any]) -> str:
@@ -645,6 +695,104 @@ def sincronizar_faqs_jeff(codigo_ramo: str) -> Dict[str, Any]:
     return {"faqs_indexadas": indexadas, "errores": errores}
 
 
+def _construir_texto_tarea(tarea: Dict[str, Any]) -> str:
+    """Construye el texto indexable de una tarea o entrega administrativa."""
+    lineas: List[str] = []
+    titulo = str(tarea.get("titulo") or "").strip()
+    fecha = str(tarea.get("fecha_limite") or "").strip()
+    formato = str(tarea.get("formato_entrega") or "").strip()
+    plataforma = str(tarea.get("plataforma") or "").strip()
+    palabras = [str(p).strip() for p in (tarea.get("palabras_clave") or []) if str(p).strip()]
+    respuesta = str(tarea.get("respuesta") or "").strip()
+
+    if titulo:
+        lineas.append(f"Tarea o entrega: {titulo}")
+    if fecha:
+        lineas.append(f"Fecha límite: {fecha}")
+    if formato:
+        lineas.append(f"Formato de entrega: {formato}")
+    if plataforma:
+        lineas.append(f"Plataforma: {plataforma}")
+    if palabras:
+        lineas.append(f"Palabras clave: {', '.join(palabras)}")
+    if respuesta:
+        lineas.append(f"Detalle oficial: {respuesta}")
+
+    return "\n".join(lineas).strip()
+
+
+def indexar_tarea_jeff(codigo_ramo: str, tarea: Dict[str, Any]) -> Dict[str, Any]:
+    """Indexa o actualiza una tarea de Jeff en ChromaDB."""
+    codigo = codigo_ramo.upper()
+    tarea_id = str(tarea.get("id") or "").strip()
+    if not tarea_id:
+        raise ValueError("La tarea debe tener un identificador 'id'")
+
+    texto = _construir_texto_tarea(tarea)
+    if not texto:
+        raise ValueError("La tarea no tiene contenido indexable")
+
+    vector = generar_embedding_ollama(_texto_para_documento(texto))
+    metadata = {
+        "ramo": codigo,
+        "carpeta": CARPETA_TAREAS_JEFF,
+        "archivo": FUENTE_TAREAS_JEFF,
+        "tarea_id": tarea_id,
+    }
+
+    with _lock_escritura:
+        coleccion = obtener_cliente_chroma(codigo)
+        coleccion.upsert(
+            ids=[f"tarea_{tarea_id}"],
+            embeddings=[vector],
+            documents=[texto],
+            metadatas=[metadata],
+        )
+
+    return {"status": "ok", "tarea_id": tarea_id, "chunks_indexados": 1}
+
+
+def eliminar_tarea_vectorial(codigo_ramo: str, tarea_id: str) -> None:
+    """Elimina el vector asociado a una tarea de Jeff en ChromaDB."""
+    codigo = codigo_ramo.upper()
+    limpio = str(tarea_id or "").strip()
+    if not limpio:
+        return
+
+    with _lock_escritura:
+        coleccion = obtener_cliente_chroma(codigo)
+        coleccion.delete(ids=[f"tarea_{limpio}"])
+
+
+def sincronizar_tareas_jeff(codigo_ramo: str) -> Dict[str, Any]:
+    """Indexa todas las tareas declaradas en config.json del ramo."""
+    codigo = codigo_ramo.upper()
+    ruta_config = DATA_DIR / codigo / "config.json"
+    if not ruta_config.exists():
+        return {"tareas_indexadas": 0, "errores": []}
+
+    with open(ruta_config, "r", encoding="utf-8") as archivo:
+        config = json.load(archivo)
+
+    tareas = config.get("tareas", [])
+    if not isinstance(tareas, list):
+        return {"tareas_indexadas": 0, "errores": []}
+
+    indexadas = 0
+    errores: List[str] = []
+    for tarea in tareas:
+        if not isinstance(tarea, dict):
+            continue
+        try:
+            indexar_tarea_jeff(codigo, tarea)
+            indexadas += 1
+        except Exception as exc:
+            logger.warning("Error indexando tarea %s en %s: %s", tarea.get("id"), codigo, exc)
+            errores.append(f"tarea:{tarea.get('id')}: {exc}")
+
+    return {"tareas_indexadas": indexadas, "errores": errores}
+
+
 def reindexar_ramo(codigo_ramo: str) -> Dict[str, Any]:
     with _lock_escritura:
         return _reindexar_ramo(codigo_ramo)
@@ -665,7 +813,14 @@ def _reindexar_ramo(codigo_ramo: str) -> Dict[str, Any]:
     errores: List[str] = []
 
     if dir_documentos.exists():
-        for archivo in sorted(dir_documentos.rglob("*.pdf")):
+        archivos = sorted(
+            archivo
+            for archivo in dir_documentos.rglob("*")
+            if archivo.is_file()
+            and archivo.suffix.lower() in EXTENSIONES_INDEXABLES
+            and not any(parte.startswith(".") for parte in archivo.relative_to(dir_documentos).parts)
+        )
+        for archivo in archivos:
             carpeta = (
                 archivo.parent.relative_to(dir_documentos).as_posix()
                 if archivo.parent != dir_documentos
@@ -684,11 +839,17 @@ def _reindexar_ramo(codigo_ramo: str) -> Dict[str, Any]:
     total_chunks += faqs_indexadas
     errores.extend(res_faqs.get("errores", []))
 
+    res_tareas = sincronizar_tareas_jeff(codigo)
+    tareas_indexadas = res_tareas.get("tareas_indexadas", 0)
+    total_chunks += tareas_indexadas
+    errores.extend(res_tareas.get("errores", []))
+
     return {
         "status": "ok",
         "codigo_ramo": codigo,
         "documentos_procesados": procesados,
         "faqs_indexadas": faqs_indexadas,
+        "tareas_indexadas": tareas_indexadas,
         "chunks_indexados": total_chunks,
         "errores": errores,
     }

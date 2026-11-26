@@ -1,11 +1,21 @@
 """Pruebas unitarias y rápida del enrutador Jeff. No necesita Ollama ni Docker."""
 
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+TESTS_DIR = Path(__file__).resolve().parent
+if str(TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(TESTS_DIR))
+
+from _test_env import asegurar_backend_en_path
+
+asegurar_backend_en_path()
+
+import rag_engine
 import router_jeff
 
 CASOS = [
@@ -95,6 +105,78 @@ class TestRouterJeffCrud(unittest.TestCase):
         # Eliminar inexistente -> KeyError
         with self.assertRaises(KeyError):
             router_jeff.eliminar_faq_jeff("TEST101", "no_existe")
+
+    def test_crud_tareas_jeff(self):
+        tareas_iniciales = router_jeff.listar_tareas("TEST101")
+        self.assertEqual(tareas_iniciales, [])
+
+        creada = router_jeff.agregar_tarea(
+            codigo_ramo="TEST101",
+            titulo="Informe 2",
+            fecha_limite="Viernes 23:59 hrs",
+            formato_entrega="PDF vía AULA USM",
+            plataforma="Buzón de Tareas",
+            palabras_clave=["informe 2", "entrega informe 2"],
+        )
+        self.assertEqual(creada["titulo"], "Informe 2")
+        self.assertEqual(len(router_jeff.listar_tareas("TEST101")), 1)
+
+        match = router_jeff.resolver_consulta("cuando se entrega el informe 2", "TEST101")
+        self.assertIsNotNone(match)
+        self.assertEqual(match["tipo"], "tarea")
+        self.assertEqual(match["topico"], creada["id"])
+
+        actualizada = router_jeff.actualizar_tarea(
+            codigo_ramo="TEST101",
+            tarea_id=creada["id"],
+            titulo="Informe 2 actualizado",
+            fecha_limite="Lunes 12:00 hrs",
+            formato_entrega="PDF y DOCX",
+            plataforma="AULA USM",
+            palabras_clave=["informe 2"],
+        )
+        self.assertEqual(actualizada["fecha_limite"], "Lunes 12:00 hrs")
+        self.assertEqual(actualizada["formato_entrega"], "PDF y DOCX")
+
+        eliminada = router_jeff.eliminar_tarea("TEST101", creada["id"])
+        self.assertEqual(eliminada["id"], creada["id"])
+        self.assertEqual(router_jeff.listar_tareas("TEST101"), [])
+
+        with self.assertRaises(KeyError):
+            router_jeff.eliminar_tarea("TEST101", "no_existe")
+
+    def test_consulta_parafraseada_de_tarea_no_activa_keyword_y_recupera_rag(self):
+        tarea = router_jeff.agregar_tarea(
+            codigo_ramo="TEST101",
+            titulo="Informe de laboratorio 2",
+            fecha_limite="Viernes 23:59",
+            palabras_clave=["informe laboratorio 2"],
+        )
+        consulta = "¿Hasta cuándo tengo que subir el reporte práctico?"
+
+        def _embedding(texto: str):
+            normalizado = texto.lower()
+            if any(
+                clave in normalizado
+                for clave in ("entrega", "reporte", "plazo", "informe", "tarea")
+            ):
+                return [0.95, 0.05, 0.0, 0.0]
+            return [0.0, 0.0, 0.95, 0.05]
+
+        with (
+            patch.object(rag_engine, "DATA_DIR", self.data_dir),
+            patch.object(rag_engine, "_clientes", {}),
+            patch.object(rag_engine, "generar_embedding_ollama", side_effect=_embedding),
+        ):
+            rag_engine.indexar_tarea_jeff("TEST101", tarea)
+            self.assertIsNone(router_jeff.resolver_consulta(consulta, "TEST101"))
+            fragmentos = rag_engine.buscar_fragmentos_relevantes(
+                consulta, "TEST101", top_k=3, min_score=0.5
+            )
+
+        self.assertTrue(
+            any(f["carpeta"] == rag_engine.CARPETA_TAREAS_JEFF for f in fragmentos)
+        )
 
     def test_planificacion_documentos_y_desambiguacion(self):
         dir_plan = self.data_dir / "TEST101" / "documentos" / "Planificacion"

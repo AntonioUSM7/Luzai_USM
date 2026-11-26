@@ -11,10 +11,19 @@ Nota: requiere que Ollama esté corriendo y `ollama pull nomic-embed-text`.
 
 import argparse
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+
+TESTS_DIR = Path(__file__).resolve().parent
+if str(TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(TESTS_DIR))
+
+from _test_env import asegurar_backend_en_path
+
+asegurar_backend_en_path()
 
 import rag_engine
 import router_jeff
@@ -31,6 +40,16 @@ class TestRagFaqsJeff(unittest.TestCase):
                 {
                     "codigo": "TESTRAG",
                     "nombre": "Curso RAG Demo",
+                    "tareas": [
+                        {
+                            "id": "tarea_informe_1",
+                            "titulo": "Informe Laboratorio 1",
+                            "fecha_limite": "Viernes 23:59",
+                            "formato_entrega": "PDF en AULA",
+                            "plataforma": "Buzón de Tareas",
+                            "palabras_clave": ["informe 1"],
+                        }
+                    ],
                     "faqs_jeff": [
                         {
                             "id": "faq_tunel",
@@ -72,10 +91,11 @@ class TestRagFaqsJeff(unittest.TestCase):
         with patch.object(
             rag_engine, "generar_embedding_ollama", side_effect=self._fake_embedding
         ):
-            # 1. Reindexar ramo incluye faqs_jeff de config.json
+            # 1. Reindexar ramo incluye faqs_jeff y tareas de config.json
             res_reindex = rag_engine.reindexar_ramo("TESTRAG")
             self.assertEqual(res_reindex["status"], "ok")
             self.assertEqual(res_reindex["faqs_indexadas"], 1)
+            self.assertEqual(res_reindex["tareas_indexadas"], 1)
 
             # 2. Consulta parafraseada que NO activa las keywords de Jeff ("informe final")
             consulta_parafraseada = "¿Hasta qué día puedo subir el documento del proyecto?"
@@ -84,15 +104,26 @@ class TestRagFaqsJeff(unittest.TestCase):
             fragmentos = rag_engine.buscar_fragmentos_relevantes(
                 consulta_parafraseada, "TESTRAG", top_k=3, min_score=0.5
             )
-            self.assertEqual(len(fragmentos), 1)
-            self.assertEqual(fragmentos[0]["carpeta"], rag_engine.CARPETA_FAQS_JEFF)
-            self.assertEqual(fragmentos[0]["archivo"], rag_engine.FUENTE_FAQS_JEFF)
+            self.assertGreaterEqual(len(fragmentos), 1)
+            carpetas = {f["carpeta"] for f in fragmentos}
+            self.assertIn(rag_engine.CARPETA_FAQS_JEFF, carpetas)
+            self.assertIn(rag_engine.CARPETA_TAREAS_JEFF, carpetas)
+
+            fragmentos_plan = rag_engine.buscar_fragmentos_planificacion(
+                "¿Cuándo debo entregar el trabajo del laboratorio?",
+                "TESTRAG",
+                top_k=4,
+                min_score=0.5,
+            )
+            self.assertTrue(
+                any(f["carpeta"] == rag_engine.CARPETA_TAREAS_JEFF for f in fragmentos_plan)
+            )
 
             contexto = rag_engine.formatear_contexto(fragmentos)
             self.assertIn("Preguntas Guardadas (Jeff)", contexto)
             self.assertIn("viernes 20", contexto)
 
-            # 3. Agregar una segunda FAQ y luego eliminar solo la primera
+            # 3. Agregar una segunda FAQ y luego eliminar solo la primera y la tarea
             faq2 = {
                 "id": "faq_sala",
                 "categoria": "Ubicación",
@@ -101,10 +132,52 @@ class TestRagFaqsJeff(unittest.TestCase):
                 "respuesta": "📌 [Jeff]: Sala C-204.",
             }
             rag_engine.indexar_faq_jeff("TESTRAG", faq2)
-            self.assertEqual(rag_engine.obtener_cliente_chroma("TESTRAG").count(), 2)
+            self.assertEqual(rag_engine.obtener_cliente_chroma("TESTRAG").count(), 3)
 
             rag_engine.eliminar_faq_vectorial("TESTRAG", "faq_tunel")
+            self.assertEqual(rag_engine.obtener_cliente_chroma("TESTRAG").count(), 2)
+
+            rag_engine.eliminar_tarea_vectorial("TESTRAG", "tarea_informe_1")
             self.assertEqual(rag_engine.obtener_cliente_chroma("TESTRAG").count(), 1)
+
+    def test_tarea_no_queda_desplazada_por_documentos_ruido(self):
+        with patch.object(
+            rag_engine, "generar_embedding_ollama", side_effect=self._fake_embedding
+        ):
+            rag_engine.reindexar_ramo("TESTRAG")
+            coleccion = rag_engine.obtener_cliente_chroma("TESTRAG")
+            coleccion.add(
+                ids=[f"ruido_{indice}" for indice in range(30)],
+                embeddings=[[1.0, 0.0, 0.0, 0.0]] * 30,
+                documents=["Apunte genérico"] * 30,
+                metadatas=[
+                    {
+                        "ramo": "TESTRAG",
+                        "carpeta": "Clases",
+                        "archivo": f"ruido_{indice}.pdf",
+                    }
+                    for indice in range(30)
+                ],
+            )
+
+            fragmentos = rag_engine.buscar_fragmentos_planificacion(
+                "¿Cuándo es la entrega del informe?",
+                "TESTRAG",
+                top_k=4,
+                min_score=0.5,
+            )
+
+        self.assertTrue(
+            any(f["carpeta"] == rag_engine.CARPETA_TAREAS_JEFF for f in fragmentos)
+        )
+
+    def test_eliminar_tarea_vectorial_propaga_fallo_de_chroma(self):
+        coleccion = Mock()
+        coleccion.delete.side_effect = RuntimeError("ChromaDB caído")
+
+        with patch.object(rag_engine, "obtener_cliente_chroma", return_value=coleccion):
+            with self.assertRaises(RuntimeError):
+                rag_engine.eliminar_tarea_vectorial("TESTRAG", "tarea_informe_1")
 
 
 def buscar_pdf_por_defecto(ramo: str) -> Path:

@@ -5,7 +5,12 @@ import {
   EventoMetadataChat,
   ConsultaProfesor,
   ConfigSocratica,
+  ConfigFallback,
+  EstadoRag,
+  CanalChat,
   FaqJeff,
+  TareaJeff,
+  AnaliticaResumen,
 } from '../types';
 
 export const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
@@ -159,15 +164,15 @@ export async function listarArchivosRamo(codigoRamo: string): Promise<RespuestaA
 }
 
 /**
- * Sube un archivo a una carpeta específica del ramo.
+ * Sube uno o varios archivos a una carpeta específica del ramo.
  */
-export async function subirArchivoRamo(
+export async function subirArchivosRamo(
   codigoRamo: string,
-  archivo: File,
+  archivos: File[],
   carpeta: string
-): Promise<ArchivoRecurso> {
+): Promise<ArchivoRecurso[]> {
   const formData = new FormData();
-  formData.append('archivo', archivo);
+  archivos.forEach((archivo) => formData.append('archivos', archivo));
   formData.append('carpeta', carpeta);
 
   const respuesta = await fetch(`${API_URL}/api/ramos/${codigoRamo}/archivos`, {
@@ -176,11 +181,24 @@ export async function subirArchivoRamo(
   });
 
   if (!respuesta.ok) {
-    throw new Error('Error al subir el archivo');
+    const detalle = await respuesta.json().catch(() => ({}));
+    throw new Error(detalle.detail || 'Error al subir los archivos');
   }
 
   const datos = await respuesta.json();
-  return datos.archivo;
+  return datos.archivos || [];
+}
+
+/**
+ * Mantiene compatible el llamado de un solo archivo.
+ */
+export async function subirArchivoRamo(
+  codigoRamo: string,
+  archivo: File,
+  carpeta: string
+): Promise<ArchivoRecurso> {
+  const [primero] = await subirArchivosRamo(codigoRamo, [archivo], carpeta);
+  return primero;
 }
 
 /**
@@ -385,6 +403,200 @@ export async function eliminarFaqJeff(
   if (!respuesta.ok) {
     const detalle = await respuesta.json().catch(() => ({}));
     throw new Error(detalle.detail || 'Error al eliminar la pregunta de Jeff');
+  }
+  return respuesta.json();
+}
+
+export interface TareaJeffPayload {
+  titulo: string;
+  fecha_limite?: string;
+  formato_entrega?: string;
+  plataforma?: string;
+  palabras_clave?: string[];
+  respuesta?: string;
+}
+
+/**
+ * Lista las tareas y entregas administrativas configuradas para Jeff.
+ */
+export async function listarTareas(codigoRamo: string): Promise<TareaJeff[]> {
+  const respuesta = await fetch(`${API_URL}/api/ramos/${codigoRamo}/tareas`);
+  if (!respuesta.ok) {
+    throw new Error('Error al cargar las tareas del ramo');
+  }
+  const datos = await respuesta.json();
+  return datos.tareas || [];
+}
+
+/**
+ * Crea una tarea administrativa para Jeff.
+ */
+export async function crearTarea(
+  codigoRamo: string,
+  payload: TareaJeffPayload
+): Promise<TareaJeff> {
+  const respuesta = await fetch(`${API_URL}/api/ramos/${codigoRamo}/tareas`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!respuesta.ok) {
+    const detalle = await respuesta.json().catch(() => ({}));
+    throw new Error(detalle.detail || 'Error al guardar la tarea');
+  }
+  const datos = await respuesta.json();
+  return datos.tarea;
+}
+
+/**
+ * Actualiza una tarea administrativa existente.
+ */
+export async function actualizarTarea(
+  codigoRamo: string,
+  tareaId: string,
+  payload: TareaJeffPayload
+): Promise<TareaJeff> {
+  const respuesta = await fetch(
+    `${API_URL}/api/ramos/${codigoRamo}/tareas/${encodeURIComponent(tareaId)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }
+  );
+  if (!respuesta.ok) {
+    const detalle = await respuesta.json().catch(() => ({}));
+    throw new Error(detalle.detail || 'Error al actualizar la tarea');
+  }
+  const datos = await respuesta.json();
+  return datos.tarea;
+}
+
+/**
+ * Elimina una tarea administrativa del ramo.
+ */
+export async function eliminarTarea(codigoRamo: string, tareaId: string): Promise<TareaJeff> {
+  const respuesta = await fetch(
+    `${API_URL}/api/ramos/${codigoRamo}/tareas/${encodeURIComponent(tareaId)}`,
+    { method: 'DELETE' }
+  );
+  if (!respuesta.ok) {
+    const detalle = await respuesta.json().catch(() => ({}));
+    throw new Error(detalle.detail || 'Error al eliminar la tarea');
+  }
+  const datos = await respuesta.json();
+  return datos.tarea;
+}
+
+/**
+ * Obtiene métricas agregadas y anónimas de uso del tutor para el ramo.
+ */
+export async function obtenerAnaliticaRamo(
+  codigoRamo: string,
+  dias = 30,
+  canal?: CanalChat,
+  limite = 10
+): Promise<AnaliticaResumen> {
+  const params = new URLSearchParams({
+    dias: String(dias),
+    limite: String(limite),
+  });
+  if (canal) {
+    params.set('canal', canal);
+  }
+  const respuesta = await fetch(
+    `${API_URL}/api/ramos/${codigoRamo}/analytics/resumen?${params.toString()}`
+  );
+  if (!respuesta.ok) {
+    const detalle = await respuesta.json().catch(() => ({}));
+    throw new Error(detalle.detail || 'Error al cargar la analítica del ramo');
+  }
+  return respuesta.json();
+}
+
+/**
+ * Elimina grupos de preguntas seleccionados de la analítica anónima del ramo.
+ */
+export async function eliminarDudasAnalitica(
+  codigoRamo: string,
+  ids: string[],
+  dias = 30,
+  canal?: CanalChat
+): Promise<{ status: string; eliminados: number; grupos_eliminados: number }> {
+  const respuesta = await fetch(
+    `${API_URL}/api/ramos/${codigoRamo}/analytics/eliminar-dudas`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ids,
+        dias,
+        canal: canal || null,
+      }),
+    }
+  );
+  if (!respuesta.ok) {
+    const detalle = await respuesta.json().catch(() => ({}));
+    throw new Error(
+      detalle.detail || 'Error al eliminar las preguntas seleccionadas'
+    );
+  }
+  return respuesta.json();
+}
+
+/**
+ * Obtiene la cantidad de fragmentos vectorizados en ChromaDB para un ramo.
+ */
+export async function obtenerEstadoRag(codigoRamo: string): Promise<EstadoRag> {
+  const respuesta = await fetch(`${API_URL}/api/ramos/${codigoRamo}/estado_rag`);
+  if (!respuesta.ok) {
+    throw new Error('Error al consultar el estado RAG del ramo');
+  }
+  return respuesta.json();
+}
+
+/**
+ * Dispara la reindexación completa del ramo en segundo plano.
+ */
+export async function reindexarRamo(
+  codigoRamo: string
+): Promise<{ status: string; codigo_ramo: string; mensaje: string }> {
+  const respuesta = await fetch(`${API_URL}/api/ramos/${codigoRamo}/reindexar`, {
+    method: 'POST',
+  });
+  if (!respuesta.ok) {
+    const detalle = await respuesta.json().catch(() => ({}));
+    throw new Error(detalle.detail || 'Error al iniciar la reindexación');
+  }
+  return respuesta.json();
+}
+
+/**
+ * Obtiene la configuración de fallback estricto del ramo.
+ */
+export async function obtenerConfigFallback(codigoRamo: string): Promise<ConfigFallback> {
+  const respuesta = await fetch(`${API_URL}/api/ramos/${codigoRamo}/config_fallback`);
+  if (!respuesta.ok) {
+    throw new Error('Error al cargar la configuración de fallback');
+  }
+  return respuesta.json();
+}
+
+/**
+ * Actualiza la configuración de fallback estricto del ramo.
+ */
+export async function actualizarConfigFallback(
+  codigoRamo: string,
+  payload: Omit<ConfigFallback, 'codigo_ramo'>
+): Promise<ConfigFallback> {
+  const respuesta = await fetch(`${API_URL}/api/ramos/${codigoRamo}/config_fallback`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!respuesta.ok) {
+    const detalle = await respuesta.json().catch(() => ({}));
+    throw new Error(detalle.detail || 'Error al guardar la configuración de fallback');
   }
   return respuesta.json();
 }

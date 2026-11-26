@@ -23,6 +23,7 @@ import {
   Sparkles,
   Bot,
   BarChart3,
+  ClipboardList,
   X,
   Plus,
   MessageSquare,
@@ -31,11 +32,14 @@ import {
   Save,
   Search,
   Pencil,
+  RefreshCw,
 } from 'lucide-react';
 import { ChatWindow } from '../alumno/ChatWindow';
+import { TareasJeffPanel } from './TareasJeffPanel';
+import { AnaliticaDocentePanel } from './AnaliticaDocentePanel';
 import {
   listarArchivosRamo,
-  subirArchivoRamo,
+  subirArchivosRamo,
   eliminarArchivoRamo,
   crearCarpetaRamo,
   eliminarCarpetaRamo,
@@ -43,6 +47,10 @@ import {
   responderConsultaProfesor,
   obtenerConfigSocratica,
   actualizarConfigSocratica,
+  obtenerConfigFallback,
+  actualizarConfigFallback,
+  obtenerEstadoRag,
+  reindexarRamo,
   listarFaqsJeff,
   crearFaqJeff,
   actualizarFaqJeff,
@@ -61,7 +69,7 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
   onSeleccionarRamo,
 }) => {
   // Pestaña activa dentro del ramo
-  const [subTab, setSubTab] = useState<'archivos' | 'consultas' | 'jeff' | 'socratico' | 'probar_ia' | 'analitica'>('archivos');
+  const [subTab, setSubTab] = useState<'archivos' | 'consultas' | 'jeff' | 'tareas' | 'socratico' | 'probar_ia' | 'analitica'>('archivos');
 
   // Estado del buzón de consultas escaladas por alumnos
   const [consultas, setConsultas] = useState<ConsultaProfesor[]>([]);
@@ -78,6 +86,14 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
   const [extensionSocratica, setExtensionSocratica] = useState<ExtensionSocratica>('media');
   const [cargandoSocratica, setCargandoSocratica] = useState<boolean>(false);
   const [guardandoSocratica, setGuardandoSocratica] = useState<boolean>(false);
+
+  // Estado de configuración de fallback estricto del ramo
+  const [fallbackHabilitado, setFallbackHabilitado] = useState<boolean>(true);
+  const [fallbackPermitirEscalar, setFallbackPermitirEscalar] = useState<boolean>(true);
+  const [fallbackMsgSinRespaldo, setFallbackMsgSinRespaldo] = useState<string>('');
+  const [fallbackMsgFueraFoco, setFallbackMsgFueraFoco] = useState<string>('');
+  const [fallbackCanalAlt, setFallbackCanalAlt] = useState<string>('');
+  const [guardandoFallback, setGuardandoFallback] = useState<boolean>(false);
 
   // Estado del apartado de Preguntas Guardadas (Jeff + RAG)
   const [faqsJeff, setFaqsJeff] = useState<FaqJeff[]>([]);
@@ -97,6 +113,8 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
   const [carpetaSeleccionada, setCarpetaSeleccionada] = useState<string | null>(null); // null = raíz
   const [archivos, setArchivos] = useState<ArchivoRecurso[]>([]);
   const [cargando, setCargando] = useState<boolean>(false);
+  const [fragmentosRag, setFragmentosRag] = useState<number | null>(null);
+  const [reindexandoRag, setReindexandoRag] = useState<boolean>(false);
 
   // Estado de creación de carpeta (soporta subcarpetas anidadas)
   const [mostrarCrearCarpeta, setMostrarCrearCarpeta] = useState<boolean>(false);
@@ -107,7 +125,7 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
 
   // Estado de la ventana modal superpuesta para subir archivos
   const [modalSubirAbierto, setModalSubirAbierto] = useState<boolean>(false);
-  const [archivoParaSubir, setArchivoParaSubir] = useState<File | null>(null);
+  const [archivosParaSubir, setArchivosParaSubir] = useState<File[]>([]);
   const [carpetaDestinoSubida, setCarpetaDestinoSubida] = useState<string>('Clases');
   const [subiendoArchivo, setSubiendoArchivo] = useState<boolean>(false);
 
@@ -134,9 +152,13 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
     if (!ramoActivo) return;
     setCargando(true);
     try {
-      const resp = await listarArchivosRamo(ramoActivo.codigo);
+      const [resp, estadoRag] = await Promise.all([
+        listarArchivosRamo(ramoActivo.codigo),
+        obtenerEstadoRag(ramoActivo.codigo).catch(() => null),
+      ]);
       setCarpetas(resp.carpetas);
       setArchivos(resp.archivos);
+      setFragmentosRag(estadoRag ? estadoRag.fragmentos_indexados : null);
       if (resp.carpetas.length > 0 && !carpetaDestinoSubida) {
         setCarpetaDestinoSubida(resp.carpetas[0]);
       }
@@ -145,6 +167,25 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
       mostrarMensaje('error', 'Error al cargar los archivos del ramo.');
     } finally {
       setCargando(false);
+    }
+  };
+
+  const manejarReindexarRamo = async () => {
+    if (!ramoActivo || reindexandoRag) return;
+    setReindexandoRag(true);
+    try {
+      const res = await reindexarRamo(ramoActivo.codigo);
+      mostrarMensaje('exito', res.mensaje || `Reindexación de ${ramoActivo.codigo} iniciada.`);
+      setTimeout(() => {
+        cargarDatosRamo();
+      }, 2500);
+    } catch (err) {
+      mostrarMensaje(
+        'error',
+        err instanceof Error ? err.message : 'No se pudo iniciar la reindexación.'
+      );
+    } finally {
+      setReindexandoRag(false);
     }
   };
 
@@ -180,10 +221,20 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
     if (!ramoActivo) return;
     setCargandoSocratica(true);
     try {
-      const cfg = await obtenerConfigSocratica(ramoActivo.codigo);
+      const [cfg, cfgFb] = await Promise.all([
+        obtenerConfigSocratica(ramoActivo.codigo),
+        obtenerConfigFallback(ramoActivo.codigo).catch(() => null),
+      ]);
       setReglasSocraticas(cfg.reglas_socraticas || '');
       setEstiloSocratico(cfg.estilo || 'equilibrado');
       setExtensionSocratica(cfg.extension || 'media');
+      if (cfgFb) {
+        setFallbackHabilitado(cfgFb.habilitado);
+        setFallbackPermitirEscalar(cfgFb.permitir_escalar_profesor);
+        setFallbackMsgSinRespaldo(cfgFb.mensaje_sin_respaldo || '');
+        setFallbackMsgFueraFoco(cfgFb.mensaje_fuera_de_foco || '');
+        setFallbackCanalAlt(cfgFb.canal_alternativo || '');
+      }
     } catch (err) {
       console.error(err);
       mostrarMensaje('error', 'Error al cargar la configuración socrática.');
@@ -327,6 +378,42 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
     }
   };
 
+  const manejarGuardarConfigFallback = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!ramoActivo) return;
+    setGuardandoFallback(true);
+    try {
+      const actualizada = await actualizarConfigFallback(ramoActivo.codigo, {
+        habilitado: fallbackHabilitado,
+        permitir_escalar_profesor: fallbackPermitirEscalar,
+        mensaje_sin_respaldo: fallbackMsgSinRespaldo,
+        mensaje_fuera_de_foco: fallbackMsgFueraFoco,
+        canal_alternativo: fallbackCanalAlt,
+      });
+      setFallbackMsgSinRespaldo(actualizada.mensaje_sin_respaldo);
+      setFallbackMsgFueraFoco(actualizada.mensaje_fuera_de_foco);
+      setFallbackCanalAlt(actualizada.canal_alternativo);
+      mostrarMensaje('exito', `Configuración de fallback de ${ramoActivo.codigo} guardada.`);
+    } catch (err) {
+      mostrarMensaje(
+        'error',
+        err instanceof Error ? err.message : 'No se pudo guardar la configuración de fallback.'
+      );
+    } finally {
+      setGuardandoFallback(false);
+    }
+  };
+
+  const abrirGuardarDudaEnJeff = (pregunta: string) => {
+    setFaqEditandoId(null);
+    setFaqPregunta(pregunta);
+    setFaqRespuesta('');
+    setFaqCategoria('Consultas Resueltas');
+    setFaqPalabrasClave('');
+    setMostrarFormFaq(true);
+    setSubTab('jeff');
+  };
+
   const manejarGuardarConfigSocratica = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!ramoActivo) return;
@@ -463,26 +550,39 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
     }
   };
 
-  // Subir archivo desde la ventana modal
+  const cerrarModalSubida = () => {
+    setModalSubirAbierto(false);
+    setArchivosParaSubir([]);
+    if (fileInputModalRef.current) fileInputModalRef.current.value = '';
+  };
+
+  // Subir archivos desde la ventana modal
   const manejarSubidaModal = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!ramoActivo || !archivoParaSubir) return;
+    if (!ramoActivo || archivosParaSubir.length === 0) return;
 
     setSubiendoArchivo(true);
     try {
-      const nuevo = await subirArchivoRamo(ramoActivo.codigo, archivoParaSubir, carpetaDestinoSubida);
+      const nuevos = await subirArchivosRamo(
+        ramoActivo.codigo,
+        archivosParaSubir,
+        carpetaDestinoSubida
+      );
+      const clavesNuevas = new Set(nuevos.map((a) => `${a.carpeta}/${a.nombre}`));
       setArchivos((prev) => [
-        nuevo,
-        ...prev.filter((a) => !(a.nombre === nuevo.nombre && a.carpeta === nuevo.carpeta)),
+        ...nuevos,
+        ...prev.filter((a) => !clavesNuevas.has(`${a.carpeta}/${a.nombre}`)),
       ]);
-      setModalSubirAbierto(false);
-      setArchivoParaSubir(null);
+      cerrarModalSubida();
       mostrarMensaje(
         'exito',
-        `Archivo "${nuevo.nombre}" subido a "${carpetaDestinoSubida.replace(/\//g, ' / ')}".`
+        `${nuevos.length} archivo(s) subido(s) a "${carpetaDestinoSubida.replace(/\//g, ' / ')}".`
       );
-    } catch {
-      mostrarMensaje('error', 'Ocurrió un error al subir el archivo.');
+    } catch (err) {
+      mostrarMensaje(
+        'error',
+        err instanceof Error ? err.message : 'Ocurrió un error al subir los archivos.'
+      );
     } finally {
       setSubiendoArchivo(false);
     }
@@ -1016,6 +1116,21 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
         </button>
 
         <button
+          onClick={() => setSubTab('tareas')}
+          className={`relative py-3.5 text-xs font-semibold flex items-center gap-2 transition whitespace-nowrap ${
+            subTab === 'tareas'
+              ? 'text-[#234E86]'
+              : 'text-slate-500 hover:text-slate-900'
+          }`}
+        >
+          <ClipboardList className="w-4 h-4" />
+          <span>Tareas y Entregas</span>
+          {subTab === 'tareas' && (
+            <span className="absolute bottom-0 left-0 right-0 h-[2.5px] bg-gradient-to-r from-[#234E86] to-[#5B97D4]" />
+          )}
+        </button>
+
+        <button
           onClick={() => setSubTab('socratico')}
           className={`relative py-3.5 text-xs font-semibold flex items-center gap-2 transition whitespace-nowrap ${
             subTab === 'socratico'
@@ -1103,7 +1218,23 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                   </p>
                 </div>
 
-                <div className="flex items-center gap-2.5">
+                <div className="flex flex-wrap items-center gap-2.5">
+                  {fragmentosRag !== null && (
+                    <span className="font-mono text-[10px] uppercase tracking-wider px-2.5 py-2 rounded-sm bg-slate-100 text-slate-600 border border-slate-200">
+                      {fragmentosRag} fragmentos RAG
+                    </span>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={manejarReindexarRamo}
+                    disabled={reindexandoRag}
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-sm border border-slate-300 bg-white hover:border-[#234E86] hover:text-[#234E86] text-slate-700 text-xs font-semibold transition disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${reindexandoRag ? 'animate-spin' : ''}`} />
+                    <span>{reindexandoRag ? 'Reindexando...' : 'Reindexar RAG'}</span>
+                  </button>
+
                   <button
                     onClick={() => {
                       setCarpetaPadreNueva(carpetaSeleccionada || '');
@@ -1123,7 +1254,7 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                     className="flex items-center gap-2 px-4 py-2 rounded-sm bg-gradient-to-r from-[#1E4478] to-[#2B5D9E] hover:brightness-105 text-white font-display text-xs font-semibold transition active:scale-[0.99]"
                   >
                     <UploadCloud className="w-4 h-4" />
-                    <span>Subir archivo</span>
+                    <span>Subir archivos</span>
                   </button>
                 </div>
               </div>
@@ -1263,7 +1394,7 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                           : 'No hay archivos en este curso aún'}
                       </p>
                       <p className="text-xs text-slate-400 max-w-sm mx-auto">
-                        Presiona el botón "Subir archivo" para cargar documentos y asignarlos a esta u otra carpeta.
+                        Presiona el botón "Subir archivos" para cargar uno o varios documentos y asignarlos a esta u otra carpeta.
                       </p>
                       <button
                         onClick={() => {
@@ -1273,7 +1404,7 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                         className="inline-flex items-center gap-2 px-4 py-2 rounded-sm bg-gradient-to-r from-[#1E4478] to-[#2B5D9E] text-white text-xs font-semibold hover:brightness-105 transition"
                       >
                         <UploadCloud className="w-4 h-4" />
-                        <span>Subir archivo aquí</span>
+                        <span>Subir archivos aquí</span>
                       </button>
                     </div>
                   ) : (
@@ -1308,10 +1439,17 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                           </div>
 
                           <div className="flex items-center gap-3 shrink-0">
-                            <span className="hidden sm:inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-sm">
-                              <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                              Indexado RAG
-                            </span>
+                            {archivo.indexado_rag ? (
+                              <span className="hidden sm:inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-sm">
+                                <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                                Indexado RAG
+                              </span>
+                            ) : (
+                              <span className="hidden sm:inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider font-medium text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-sm">
+                                <Clock className="w-3 h-3 text-amber-600" />
+                                Pendiente RAG
+                              </span>
+                            )}
 
                             <button
                               onClick={() => manejarEliminarArchivo(archivo)}
@@ -1798,135 +1936,225 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
             </div>
           )}
 
+          {subTab === 'tareas' && (
+            <TareasJeffPanel
+              codigoRamo={ramoActivo.codigo}
+              onNotify={mostrarMensaje}
+            />
+          )}
+
           {subTab === 'socratico' && (
-            <form
-              onSubmit={manejarGuardarConfigSocratica}
-              className="bg-white p-7 rounded-sm border border-slate-200 space-y-7"
-            >
-              <div className="border-b border-slate-200 pb-5">
-                <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-[#3A70B2]">
-                  Configuración del modelo · Qwen3 8B
-                </span>
-                <h3 className="font-display text-lg font-bold text-slate-950 mt-1">
-                  Reglas socráticas del tutor ({ramoActivo.codigo})
-                </h3>
-                <p className="text-xs text-slate-500 mt-1">
-                  Define cómo responde el modelo generativo cuando apoya a tus estudiantes con los apuntes del curso.
-                </p>
-              </div>
+            <div className="space-y-6">
+              <form
+                onSubmit={manejarGuardarConfigSocratica}
+                className="bg-white p-7 rounded-sm border border-slate-200 space-y-7"
+              >
+                <div className="border-b border-slate-200 pb-5">
+                  <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-[#3A70B2]">
+                    Configuración del modelo · Qwen3 8B
+                  </span>
+                  <h3 className="font-display text-lg font-bold text-slate-950 mt-1">
+                    Reglas socráticas del tutor ({ramoActivo.codigo})
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Define cómo responde el modelo generativo cuando apoya a tus estudiantes con los apuntes del curso.
+                  </p>
+                </div>
 
-              {cargandoSocratica ? (
-                <p className="text-xs text-slate-500 py-6 text-center">
-                  Cargando configuración socrática...
-                </p>
-              ) : (
-                <>
-                  <div className="space-y-2.5">
-                    <label className="block font-mono text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
-                      Estilo pedagógico
-                    </label>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                      {(
-                        [
-                          {
-                            id: 'estricto',
-                            titulo: 'Estricto (Solo preguntas)',
-                            desc: 'Responde con preguntas guía y pistas mínimas sin explicaciones largas.',
-                          },
-                          {
-                            id: 'equilibrado',
-                            titulo: 'Equilibrado (Recomendado)',
-                            desc: 'Da una síntesis conceptual breve y cierra con 1–2 preguntas guía.',
-                          },
-                          {
-                            id: 'paso_a_paso',
-                            titulo: 'Paso a paso',
-                            desc: 'Divide el problema en pasos pequeños y valida cada etapa con el alumno.',
-                          },
-                        ] as const
-                      ).map((op) => (
-                        <button
-                          key={op.id}
-                          type="button"
-                          onClick={() => setEstiloSocratico(op.id)}
-                          className={`text-left p-4 rounded-sm border transition ${
-                            estiloSocratico === op.id
-                              ? 'border-[#234E86] border-t-2 border-t-[#234E86] bg-blue-50/40'
-                              : 'border-slate-200 hover:border-slate-300 bg-white'
-                          }`}
-                        >
-                          <div className="font-display text-xs font-bold text-slate-900">{op.titulo}</div>
-                          <p className="text-[11px] text-slate-500 mt-1.5 leading-relaxed">{op.desc}</p>
-                        </button>
-                      ))}
+                {cargandoSocratica ? (
+                  <p className="text-xs text-slate-500 py-6 text-center">
+                    Cargando configuración socrática...
+                  </p>
+                ) : (
+                  <>
+                    <div className="space-y-2.5">
+                      <label className="block font-mono text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
+                        Estilo pedagógico
+                      </label>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        {(
+                          [
+                            {
+                              id: 'estricto',
+                              titulo: 'Estricto (Solo preguntas)',
+                              desc: 'Responde con preguntas guía y pistas mínimas sin explicaciones largas.',
+                            },
+                            {
+                              id: 'equilibrado',
+                              titulo: 'Equilibrado (Recomendado)',
+                              desc: 'Da una síntesis conceptual breve y cierra con 1–2 preguntas guía.',
+                            },
+                            {
+                              id: 'paso_a_paso',
+                              titulo: 'Paso a paso',
+                              desc: 'Divide el problema en pasos pequeños y valida cada etapa con el alumno.',
+                            },
+                          ] as const
+                        ).map((op) => (
+                          <button
+                            key={op.id}
+                            type="button"
+                            onClick={() => setEstiloSocratico(op.id)}
+                            className={`text-left p-4 rounded-sm border transition ${
+                              estiloSocratico === op.id
+                                ? 'border-[#234E86] border-t-2 border-t-[#234E86] bg-blue-50/40'
+                                : 'border-slate-200 hover:border-slate-300 bg-white'
+                            }`}
+                          >
+                            <div className="font-display text-xs font-bold text-slate-900">{op.titulo}</div>
+                            <p className="text-[11px] text-slate-500 mt-1.5 leading-relaxed">{op.desc}</p>
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                  </div>
 
-                  <div className="space-y-2.5">
-                    <label className="block font-mono text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
-                      Extensión de respuesta
-                    </label>
-                    <div className="flex flex-wrap gap-3">
-                      {(
-                        [
-                          { id: 'corta', label: 'Corta (1 párrafo breve o 3 viñetas)' },
-                          { id: 'media', label: 'Media (1–2 párrafos estructurados)' },
-                        ] as const
-                      ).map((op) => (
-                        <button
-                          key={op.id}
-                          type="button"
-                          onClick={() => setExtensionSocratica(op.id)}
-                          className={`px-4 py-2.5 rounded-sm text-xs font-semibold border transition ${
-                            extensionSocratica === op.id
-                              ? 'border-[#234E86] bg-[#234E86] text-white'
-                              : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'
-                          }`}
-                        >
-                          {op.label}
-                        </button>
-                      ))}
+                    <div className="space-y-2.5">
+                      <label className="block font-mono text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
+                        Extensión de respuesta
+                      </label>
+                      <div className="flex flex-wrap gap-3">
+                        {(
+                          [
+                            { id: 'corta', label: 'Corta (1 párrafo breve o 3 viñetas)' },
+                            { id: 'media', label: 'Media (1–2 párrafos estructurados)' },
+                          ] as const
+                        ).map((op) => (
+                          <button
+                            key={op.id}
+                            type="button"
+                            onClick={() => setExtensionSocratica(op.id)}
+                            className={`px-4 py-2.5 rounded-sm text-xs font-semibold border transition ${
+                              extensionSocratica === op.id
+                                ? 'border-[#234E86] bg-[#234E86] text-white'
+                                : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'
+                            }`}
+                          >
+                            {op.label}
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                  </div>
 
-                  <div className="space-y-2">
-                    <label className="block font-mono text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
-                      Instrucciones y restricciones específicas del ramo
-                    </label>
-                    <textarea
-                      rows={5}
-                      value={reglasSocraticas}
-                      onChange={(e) => setReglasSocraticas(e.target.value)}
-                      placeholder="Ej.: Jamás entregues el resultado numérico final ni comandos completos. Usa analogías físicas y exige que el alumno identifique las condiciones de borde."
-                      className="w-full rounded-sm border border-slate-300 px-3.5 py-2.5 text-xs leading-relaxed focus:outline-none focus:border-[#234E86]"
+                    <div className="space-y-2">
+                      <label className="block font-mono text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
+                        Instrucciones y restricciones específicas del ramo
+                      </label>
+                      <textarea
+                        rows={5}
+                        value={reglasSocraticas}
+                        onChange={(e) => setReglasSocraticas(e.target.value)}
+                        placeholder="Ej.: Jamás entregues el resultado numérico final ni comandos completos. Usa analogías físicas y exige que el alumno identifique las condiciones de borde."
+                        className="w-full rounded-sm border border-slate-300 px-3.5 py-2.5 text-xs leading-relaxed focus:outline-none focus:border-[#234E86]"
+                      />
+                    </div>
+
+                    <div className="flex justify-end pt-4 border-t border-slate-100">
+                      <button
+                        type="submit"
+                        disabled={guardandoSocratica}
+                        className="inline-flex items-center gap-2 px-5 py-2.5 rounded-sm font-display text-xs font-semibold bg-gradient-to-r from-[#1E4478] to-[#2B5D9E] hover:brightness-105 text-white transition disabled:opacity-50"
+                      >
+                        <Save className="w-4 h-4" />
+                        {guardandoSocratica ? 'Guardando...' : 'Guardar configuración socrática'}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </form>
+
+              <form
+                onSubmit={manejarGuardarConfigFallback}
+                className="bg-white p-7 rounded-sm border border-slate-200 space-y-5"
+              >
+                <div className="border-b border-slate-200 pb-4">
+                  <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-[#3A70B2]">
+                    Guardrails · Respuesta sin respaldo
+                  </span>
+                  <h3 className="font-display text-base font-bold text-slate-950 mt-1">
+                    Fallback estricto y escalamiento docente ({ramoActivo.codigo})
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Controla cómo responde el sistema cuando no encuentra respaldo en los apuntes o detecta una consulta fuera de foco.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <label className="flex items-center gap-2.5 text-xs text-slate-700 cursor-pointer p-3 rounded-sm border border-slate-200 bg-slate-50/50">
+                    <input
+                      type="checkbox"
+                      checked={fallbackHabilitado}
+                      onChange={(e) => setFallbackHabilitado(e.target.checked)}
+                      className="rounded-sm border-slate-300 text-[#234E86]"
                     />
-                  </div>
+                    <span className="font-medium">Activar fallback estricto ($0 GPU sin respaldo)</span>
+                  </label>
+                  <label className="flex items-center gap-2.5 text-xs text-slate-700 cursor-pointer p-3 rounded-sm border border-slate-200 bg-slate-50/50">
+                    <input
+                      type="checkbox"
+                      checked={fallbackPermitirEscalar}
+                      onChange={(e) => setFallbackPermitirEscalar(e.target.checked)}
+                      className="rounded-sm border-slate-300 text-[#234E86]"
+                    />
+                    <span className="font-medium">Permitir que el alumno envíe la duda al docente</span>
+                  </label>
+                </div>
 
-                  <div className="flex justify-end pt-4 border-t border-slate-100">
-                    <button
-                      type="submit"
-                      disabled={guardandoSocratica}
-                      className="inline-flex items-center gap-2 px-5 py-2.5 rounded-sm font-display text-xs font-semibold bg-gradient-to-r from-[#1E4478] to-[#2B5D9E] hover:brightness-105 text-white transition disabled:opacity-50"
-                    >
-                      <Save className="w-4 h-4" />
-                      {guardandoSocratica ? 'Guardando...' : 'Guardar configuración socrática'}
-                    </button>
-                  </div>
-                </>
-              )}
-            </form>
+                <div>
+                  <label className="block font-mono text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">
+                    Mensaje cuando falta respaldo RAG
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={fallbackMsgSinRespaldo}
+                    onChange={(e) => setFallbackMsgSinRespaldo(e.target.value)}
+                    className="w-full rounded-sm border border-slate-300 px-3 py-2 text-xs focus:outline-none focus:border-[#234E86]"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-mono text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">
+                    Mensaje cuando la consulta está fuera de foco
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={fallbackMsgFueraFoco}
+                    onChange={(e) => setFallbackMsgFueraFoco(e.target.value)}
+                    className="w-full rounded-sm border border-slate-300 px-3 py-2 text-xs focus:outline-none focus:border-[#234E86]"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-mono text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">
+                    Canal alternativo sugerido
+                  </label>
+                  <input
+                    type="text"
+                    value={fallbackCanalAlt}
+                    onChange={(e) => setFallbackCanalAlt(e.target.value)}
+                    placeholder="Ej.: Foro de consultas en AULA USM"
+                    className="w-full rounded-sm border border-slate-300 px-3 py-2 text-xs focus:outline-none focus:border-[#234E86]"
+                  />
+                </div>
+
+                <div className="flex justify-end pt-3 border-t border-slate-100">
+                  <button
+                    type="submit"
+                    disabled={guardandoFallback}
+                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-sm font-display text-xs font-semibold bg-[#234E86] hover:bg-[#1B3E6E] text-white transition disabled:opacity-50"
+                  >
+                    <Save className="w-4 h-4" />
+                    {guardandoFallback ? 'Guardando...' : 'Guardar configuración de fallback'}
+                  </button>
+                </div>
+              </form>
+            </div>
           )}
 
           {subTab === 'analitica' && (
-            <div className="bg-white p-12 rounded-sm border border-slate-200 text-center space-y-2.5">
-              <BarChart3 className="w-9 h-9 text-[#3A70B2] mx-auto" />
-              <h3 className="font-display text-base font-bold text-slate-900">
-                Analítica anónima de dudas
-              </h3>
-              <p className="text-xs text-slate-500 max-w-md mx-auto leading-relaxed">
-                Aquí se desplegarán las métricas de qué temas están consultando los alumnos sin vulnerar su privacidad.
-              </p>
-            </div>
+            <AnaliticaDocentePanel
+              codigoRamo={ramoActivo.codigo}
+              onGuardarEnJeff={abrirGuardarDudaEnJeff}
+            />
           )}
         </div>
       </div>
@@ -1945,17 +2173,14 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
             <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
               <div>
                 <h3 className="font-display text-sm font-bold text-slate-950">
-                  Cargar archivo al repositorio
+                  Cargar archivos al repositorio
                 </h3>
                 <p className="font-mono text-[10px] uppercase tracking-wider text-slate-400 mt-0.5">
                   Asignatura · {ramoActivo.codigo}
                 </p>
               </div>
               <button
-                onClick={() => {
-                  setModalSubirAbierto(false);
-                  setArchivoParaSubir(null);
-                }}
+                onClick={cerrarModalSubida}
                 className="p-1.5 text-slate-400 hover:text-slate-700 transition"
               >
                 <X className="w-4 h-4" />
@@ -1982,38 +2207,61 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                 </select>
               </div>
 
-              {/* Selector de Archivo */}
+              {/* Selector de Archivos */}
               <div>
                 <label className="block font-mono text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">
-                  Documento
+                  Documentos
                 </label>
                 <div
                   onClick={() => fileInputModalRef.current?.click()}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setArchivosParaSubir(Array.from(e.dataTransfer.files));
+                  }}
                   className="border border-dashed border-slate-300 hover:border-[#234E86] rounded-sm p-6 text-center cursor-pointer bg-slate-50/50 hover:bg-blue-50/30 transition-all"
                 >
                   <input
                     ref={fileInputModalRef}
                     type="file"
-                    accept=".pdf,.txt,.docx"
-                    onChange={(e) => setArchivoParaSubir(e.target.files?.[0] || null)}
+                    multiple
+                    accept=".pdf,.txt,.md,.docx"
+                    onChange={(e) => setArchivosParaSubir(Array.from(e.target.files || []))}
                     className="hidden"
                   />
                   <FileText className="w-7 h-7 text-[#3A70B2] mx-auto mb-2" />
-                  {archivoParaSubir ? (
+                  {archivosParaSubir.length > 0 ? (
                     <div>
-                      <p className="text-xs font-bold text-slate-900 truncate">
-                        {archivoParaSubir.name}
+                      <p className="text-xs font-bold text-slate-900">
+                        {archivosParaSubir.length} archivo(s) seleccionado(s)
                       </p>
-                      <p className="font-mono text-[10px] text-emerald-600 font-semibold mt-1">
-                        {(archivoParaSubir.size / (1024 * 1024)).toFixed(2)} MB · Listo para subir
+                      <ul className="mt-2 space-y-0.5 text-left">
+                        {archivosParaSubir.slice(0, 4).map((archivo, indice) => (
+                          <li
+                            key={`${archivo.name}-${indice}`}
+                            className="font-mono text-[10px] text-slate-600 truncate"
+                          >
+                            {archivo.name}
+                          </li>
+                        ))}
+                        {archivosParaSubir.length > 4 && (
+                          <li className="font-mono text-[10px] text-slate-400">
+                            +{archivosParaSubir.length - 4} más
+                          </li>
+                        )}
+                      </ul>
+                      <p className="font-mono text-[10px] text-emerald-600 font-semibold mt-2">
+                        {(archivosParaSubir.reduce((total, archivo) => total + archivo.size, 0) / (1024 * 1024)).toFixed(2)} MB · Listos para subir
                       </p>
                     </div>
                   ) : (
                     <div>
                       <p className="text-xs font-semibold text-slate-700">
-                        Haz clic para buscar o arrastra el archivo aquí
+                        Haz clic o arrastra los archivos aquí
                       </p>
-                      <p className="font-mono text-[10px] text-slate-400 mt-1">PDF, TXT o DOCX</p>
+                      <p className="font-mono text-[10px] text-slate-400 mt-1">
+                        PDF, TXT, MD o DOCX · puedes seleccionar varios
+                      </p>
                     </div>
                   )}
                 </div>
@@ -2023,17 +2271,14 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
               <div className="pt-3 flex items-center justify-end gap-2.5 border-t border-slate-100">
                 <button
                   type="button"
-                  onClick={() => {
-                    setModalSubirAbierto(false);
-                    setArchivoParaSubir(null);
-                  }}
+                  onClick={cerrarModalSubida}
                   className="px-4 py-2 rounded-sm text-xs font-semibold text-slate-600 hover:bg-slate-100 transition"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
-                  disabled={subiendoArchivo || !archivoParaSubir}
+                  disabled={subiendoArchivo || archivosParaSubir.length === 0}
                   className="px-4 py-2 rounded-sm bg-gradient-to-r from-[#1E4478] to-[#2B5D9E] hover:brightness-105 text-white font-display text-xs font-semibold transition disabled:opacity-50"
                 >
                   {subiendoArchivo ? 'Subiendo e indexando...' : 'Subir e indexar en RAG'}

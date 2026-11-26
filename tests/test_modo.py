@@ -1,6 +1,16 @@
 """Pruebas rápidas del clasificador y de los guards. No necesita Ollama ni Docker."""
 
 import sys
+import unittest
+from pathlib import Path
+
+TESTS_DIR = Path(__file__).resolve().parent
+if str(TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(TESTS_DIR))
+
+from _test_env import asegurar_backend_en_path
+
+asegurar_backend_en_path()
 
 from router_modo import (
     detectar_modo,
@@ -77,6 +87,28 @@ def ejecutar(nombre, casos, funcion):
     return fallas
 
 
+class TestRouterModo(unittest.TestCase):
+    def test_detectar_modo(self):
+        for entrada, esperado in CASOS_MODO:
+            with self.subTest(entrada=entrada):
+                self.assertEqual(detectar_modo(entrada), esperado)
+
+    def test_calculo_directo(self):
+        for entrada, esperado in CASOS_CALCULO:
+            with self.subTest(entrada=entrada):
+                self.assertEqual(es_calculo_directo(entrada), esperado)
+
+    def test_saludo(self):
+        for entrada, esperado in CASOS_SALUDO:
+            with self.subTest(entrada=entrada):
+                self.assertEqual(es_saludo(entrada), esperado)
+
+    def test_alcance(self):
+        for entrada, esperado in CASOS_ALCANCE:
+            with self.subTest(entrada=entrada):
+                self.assertEqual(menciona_tema_del_ramo(entrada, TEMARIO), esperado)
+
+
 def main() -> None:
     fallas = 0
     fallas += ejecutar("Modo", CASOS_MODO, detectar_modo)
@@ -94,4 +126,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    unittest.main()

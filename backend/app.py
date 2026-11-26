@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import AsyncIterator, Dict, Any, List, Literal, Optional
@@ -15,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+import analytics_store
 import consultas_store
 import rag_engine
 import router_jeff
@@ -82,10 +84,41 @@ class FaqJeffReq(BaseModel):
     categoria: str = "Consultas Resueltas"
 
 
+class TareaJeffReq(BaseModel):
+    titulo: str
+    fecha_limite: Optional[str] = None
+    formato_entrega: Optional[str] = None
+    plataforma: Optional[str] = None
+    palabras_clave: Optional[List[str]] = None
+    respuesta: Optional[str] = None
+
+
 class ConfigSocraticaReq(BaseModel):
     reglas_socraticas: str = ""
     estilo: Literal["estricto", "equilibrado", "paso_a_paso"] = "equilibrado"
     extension: Literal["corta", "media"] = "media"
+
+
+class ConfigFallbackReq(BaseModel):
+    habilitado: Optional[bool] = None
+    permitir_escalar_profesor: Optional[bool] = None
+    mensaje_sin_respaldo: Optional[str] = None
+    mensaje_fuera_de_foco: Optional[str] = None
+    canal_alternativo: Optional[str] = None
+
+
+def _listar_documentos_ramo(codigo: str) -> List[str]:
+    """Lista archivos indexables reales, evitando depender del seed de config.json."""
+    dir_documentos = BASE_DATA_DIR / codigo.upper() / "documentos"
+    if not dir_documentos.exists():
+        return []
+    return sorted(
+        archivo.relative_to(dir_documentos).as_posix()
+        for archivo in dir_documentos.rglob("*")
+        if archivo.is_file()
+        and archivo.suffix.lower() in rag_engine.EXTENSIONES_INDEXABLES
+        and not any(parte.startswith(".") for parte in archivo.relative_to(dir_documentos).parts)
+    )
 
 
 def obtener_lista_ramos():
@@ -100,13 +133,14 @@ def obtener_lista_ramos():
             if archivo_config.exists():
                 with open(archivo_config, "r", encoding="utf-8") as f:
                     datos = json.load(f)
+                    codigo = datos.get("codigo") or carpeta.name
                     ramos.append({
-                        "codigo": datos.get("codigo"),
+                        "codigo": codigo,
                         "nombre": datos.get("nombre"),
                         "departamento": datos.get("departamento"),
                         "profesor": datos.get("profesor"),
                         "descripcion": datos.get("descripcion"),
-                        "documentos": datos.get("documentos", []),
+                        "documentos": _listar_documentos_ramo(codigo),
                         "reglas_socraticas": datos.get("reglas_socraticas", ""),
                     })
     return ramos
@@ -138,7 +172,7 @@ def formatear_tamano(tamano_bytes: int) -> str:
         return f"{tamano_bytes / (1024 * 1024):.1f} MB"
 
 
-CARPETAS_POR_DEFECTO = ["Clases", "Tareas", "Guias", "Certamenes"]
+CARPETAS_POR_DEFECTO = ["Clases", "Tareas", "Guias", "Certamenes", "Planificacion"]
 
 
 def normalizar_ruta_carpeta(ruta: str) -> str:
@@ -260,47 +294,69 @@ def listar_archivos_ramo(codigo_ramo: str):
 
 
 @app.post("/api/ramos/{codigo_ramo}/archivos")
-async def subir_archivo_ramo(
+async def subir_archivos_ramo(
     codigo_ramo: str,
     background_tasks: BackgroundTasks,
-    archivo: UploadFile = File(...),
+    archivos: Optional[List[UploadFile]] = File(None),
+    archivo: Optional[UploadFile] = File(None),
     carpeta: str = Form("Clases"),
 ):
-    """Sube un archivo a la carpeta o subcarpeta seleccionada del ramo y lo indexa en background."""
+    """Sube uno o varios archivos a la carpeta seleccionada y los indexa en background."""
     codigo = codigo_ramo.upper()
     dir_documentos = BASE_DATA_DIR / codigo / "documentos"
     carpeta_limpia = normalizar_ruta_carpeta(carpeta) or "General"
 
+    entradas = [entrada for entrada in (archivos or []) if entrada is not None]
+    if archivo is not None:
+        entradas.append(archivo)
+    if not entradas:
+        raise HTTPException(status_code=400, detail="Debe seleccionar al menos un archivo")
+
     dir_destino = resolver_ruta_segura(dir_documentos, carpeta_limpia)
     dir_destino.mkdir(parents=True, exist_ok=True)
 
-    # Limpiar nombre del archivo
-    nombre_limpio = Path(archivo.filename).name.replace(" ", "_")
-    ruta_archivo = dir_destino / nombre_limpio
+    subidos = []
+    nombres_usados = set()
+    for entrada in entradas:
+        nombre = Path(entrada.filename or "").name.replace(" ", "_")
+        if not nombre:
+            await entrada.close()
+            raise HTTPException(status_code=400, detail="Hay archivos sin nombre válido")
 
-    try:
-        with open(ruta_archivo, "wb") as f:
-            shutil.copyfileobj(archivo.file, f)
-    finally:
-        await archivo.close()
+        if nombre in nombres_usados:
+            stem, extension = os.path.splitext(nombre)
+            indice = 2
+            while f"{stem}_{indice}{extension}" in nombres_usados:
+                indice += 1
+            nombre = f"{stem}_{indice}{extension}"
+        nombres_usados.add(nombre)
 
-    background_tasks.add_task(rag_engine.indexar_documento, ruta_archivo, codigo, carpeta_limpia)
+        ruta_archivo = dir_destino / nombre
+        with open(ruta_archivo, "wb") as destino:
+            shutil.copyfileobj(entrada.file, destino)
+        await entrada.close()
 
-    stats = ruta_archivo.stat()
-    fecha_iso = datetime.fromtimestamp(stats.st_mtime).strftime("%d/%m/%Y %H:%M")
+        background_tasks.add_task(rag_engine.indexar_documento, ruta_archivo, codigo, carpeta_limpia)
 
-    return {
-        "status": "ok",
-        "mensaje": f"Archivo '{nombre_limpio}' subido exitosamente. Indexación RAG en curso.",
-        "archivo": {
-            "nombre": nombre_limpio,
+        stats = ruta_archivo.stat()
+        fecha_iso = datetime.fromtimestamp(stats.st_mtime).strftime("%d/%m/%Y %H:%M")
+        subidos.append({
+            "nombre": nombre,
             "carpeta": carpeta_limpia,
             "tamano_bytes": stats.st_size,
             "tamano_legible": formatear_tamano(stats.st_size),
             "fecha_modificacion": fecha_iso,
             "indexado_rag": False,
             "estado_indexacion": "pendiente",
-        },
+        })
+
+    cantidad = len(subidos)
+    return {
+        "status": "ok",
+        "mensaje": f"{cantidad} archivo(s) subido(s) exitosamente. Indexación RAG en curso.",
+        "total": cantidad,
+        "archivos": subidos,
+        "archivo": subidos[0] if subidos else None,
     }
 
 
@@ -574,6 +630,168 @@ def eliminar_faq_jeff_ramo(codigo_ramo: str, faq_id: str):
     return {"status": "ok", "faq": eliminada, "rag_sincronizado": rag_sincronizado}
 
 
+def _sincronizar_tarea_rag(codigo_ramo: str, tarea: Dict[str, Any]) -> bool:
+    """Indexa una tarea de Jeff en ChromaDB sin bloquear la operación ante fallos de Ollama."""
+    try:
+        rag_engine.indexar_tarea_jeff(codigo_ramo, tarea)
+        return True
+    except Exception as exc:
+        logger.warning(
+            "No se pudo indexar tarea '%s' de %s en RAG: %s",
+            tarea.get("id"),
+            codigo_ramo,
+            exc,
+        )
+        return False
+
+
+def _eliminar_tarea_rag(codigo_ramo: str, tarea_id: str) -> bool:
+    """Elimina una tarea de Jeff en ChromaDB de forma tolerante a fallos."""
+    try:
+        rag_engine.eliminar_tarea_vectorial(codigo_ramo, tarea_id)
+        return True
+    except Exception as exc:
+        logger.warning(
+            "No se pudo eliminar tarea '%s' de %s en RAG: %s",
+            tarea_id,
+            codigo_ramo,
+            exc,
+        )
+        return False
+
+
+@app.get("/api/ramos/{codigo_ramo}/tareas")
+def listar_tareas_ramo(codigo_ramo: str):
+    """Lista las tareas y entregas configuradas para un ramo."""
+    codigo = codigo_ramo.upper()
+    try:
+        tareas = router_jeff.listar_tareas(codigo)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Ramo no encontrado")
+    return {"codigo_ramo": codigo, "total": len(tareas), "tareas": tareas}
+
+
+@app.post("/api/ramos/{codigo_ramo}/tareas")
+def crear_tarea_ramo(codigo_ramo: str, req: TareaJeffReq):
+    """Crea una tarea administrativa para Jeff y la sincroniza con RAG."""
+    codigo = codigo_ramo.upper()
+    try:
+        tarea = router_jeff.agregar_tarea(
+            codigo_ramo=codigo,
+            titulo=req.titulo,
+            fecha_limite=req.fecha_limite,
+            formato_entrega=req.formato_entrega,
+            plataforma=req.plataforma,
+            palabras_clave=req.palabras_clave,
+            respuesta=req.respuesta,
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Ramo no encontrado")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    rag_sincronizado = _sincronizar_tarea_rag(codigo, tarea)
+    return {"status": "ok", "tarea": tarea, "rag_sincronizado": rag_sincronizado}
+
+
+@app.put("/api/ramos/{codigo_ramo}/tareas/{tarea_id}")
+def actualizar_tarea_ramo(codigo_ramo: str, tarea_id: str, req: TareaJeffReq):
+    """Actualiza una tarea administrativa existente y la re-indexa en RAG."""
+    codigo = codigo_ramo.upper()
+    try:
+        tarea = router_jeff.actualizar_tarea(
+            codigo_ramo=codigo,
+            tarea_id=tarea_id,
+            titulo=req.titulo,
+            fecha_limite=req.fecha_limite,
+            formato_entrega=req.formato_entrega,
+            plataforma=req.plataforma,
+            palabras_clave=req.palabras_clave,
+            respuesta=req.respuesta,
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Ramo no encontrado")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    rag_sincronizado = _sincronizar_tarea_rag(codigo, tarea)
+    return {"status": "ok", "tarea": tarea, "rag_sincronizado": rag_sincronizado}
+
+
+@app.delete("/api/ramos/{codigo_ramo}/tareas/{tarea_id}")
+def eliminar_tarea_ramo(codigo_ramo: str, tarea_id: str):
+    """Elimina una tarea administrativa del ramo y remueve su vector en RAG."""
+    codigo = codigo_ramo.upper()
+    try:
+        tarea = router_jeff.eliminar_tarea(codigo, tarea_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Ramo no encontrado")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    rag_sincronizado = _eliminar_tarea_rag(codigo, tarea_id)
+    return {"status": "ok", "tarea": tarea, "rag_sincronizado": rag_sincronizado}
+
+
+class EliminarDudasAnalitica(BaseModel):
+    ids: List[str] = Field(..., min_length=1)
+    dias: int = analytics_store.DIAS_DEFAULT
+    canal: Optional[str] = None
+
+
+def _validar_ramo_y_filtros_analitica(
+    codigo_ramo: str,
+    dias: int,
+    canal: Optional[str],
+) -> str:
+    codigo = codigo_ramo.upper()
+    if not (BASE_DATA_DIR / codigo / "config.json").exists():
+        raise HTTPException(status_code=404, detail="Ramo no encontrado")
+    if dias < 1 or dias > analytics_store.DIAS_MAX:
+        raise HTTPException(
+            status_code=400,
+            detail=f"dias debe estar entre 1 y {analytics_store.DIAS_MAX}",
+        )
+    if canal and canal not in analytics_store.CANALES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"canal debe ser uno de: {', '.join(analytics_store.CANALES)}",
+        )
+    return codigo
+
+
+@app.get("/api/ramos/{codigo_ramo}/analytics/resumen")
+def obtener_analitica_ramo(
+    codigo_ramo: str,
+    dias: int = analytics_store.DIAS_DEFAULT,
+    canal: Optional[str] = None,
+    limite: int = analytics_store.TOP_DUDAS_DEFAULT,
+):
+    """Devuelve métricas agregadas y anónimas de uso del tutor para el ramo."""
+    codigo = _validar_ramo_y_filtros_analitica(codigo_ramo, dias, canal)
+    if limite < 1 or limite > analytics_store.TOP_DUDAS_MAX:
+        raise HTTPException(
+            status_code=400,
+            detail=f"limite debe estar entre 1 y {analytics_store.TOP_DUDAS_MAX}",
+        )
+    return analytics_store.resumen(codigo, dias=dias, canal=canal, limite=limite)
+
+
+@app.post("/api/ramos/{codigo_ramo}/analytics/eliminar-dudas")
+def eliminar_dudas_analitica(
+    codigo_ramo: str,
+    payload: EliminarDudasAnalitica,
+):
+    """Elimina del registro anónimo los grupos de preguntas seleccionados por el docente."""
+    codigo = _validar_ramo_y_filtros_analitica(codigo_ramo, payload.dias, payload.canal)
+    resultado = analytics_store.eliminar_dudas(
+        codigo,
+        ids_grupos=payload.ids,
+        dias=payload.dias,
+        canal=payload.canal,
+    )
+    return {"status": "ok", **resultado}
+
+
 _ESTILOS_SOCRATICOS = {
     "estricto": (
         "ESTILO DEL DOCENTE (ESTRICTO): responde únicamente con preguntas guía breves y "
@@ -655,6 +873,53 @@ def actualizar_config_socratica_ramo(codigo_ramo: str, req: ConfigSocraticaReq):
     }
 
 
+@app.get("/api/ramos/{codigo_ramo}/config_fallback")
+def obtener_config_fallback_ramo(codigo_ramo: str):
+    """Devuelve la configuración editable de fallback estricto del ramo."""
+    codigo = codigo_ramo.upper()
+    ruta_config = BASE_DATA_DIR / codigo / "config.json"
+    if not ruta_config.exists():
+        raise HTTPException(status_code=404, detail="Ramo no encontrado")
+    with open(ruta_config, "r", encoding="utf-8") as archivo:
+        datos = json.load(archivo)
+    return {"codigo_ramo": codigo, **_obtener_config_fallback(datos, codigo)}
+
+
+@app.put("/api/ramos/{codigo_ramo}/config_fallback")
+def actualizar_config_fallback_ramo(codigo_ramo: str, req: ConfigFallbackReq):
+    """Actualiza de forma atómica config_fallback en config.json."""
+    codigo = codigo_ramo.upper()
+    ruta_config = BASE_DATA_DIR / codigo / "config.json"
+
+    with router_jeff._CONFIG_LOCK:
+        if not ruta_config.exists():
+            raise HTTPException(status_code=404, detail="Ramo no encontrado")
+        with open(ruta_config, "r", encoding="utf-8") as archivo:
+            datos = json.load(archivo)
+
+        actual = _obtener_config_fallback(datos, codigo)
+
+        def texto(nuevo: Optional[str], clave: str) -> str:
+            if nuevo is None:
+                return actual[clave]
+            return nuevo.strip() or _obtener_config_fallback({}, codigo)[clave]
+
+        datos["config_fallback"] = {
+            "habilitado": bool(req.habilitado) if req.habilitado is not None else actual["habilitado"],
+            "permitir_escalar_profesor": bool(req.permitir_escalar_profesor)
+            if req.permitir_escalar_profesor is not None
+            else actual["permitir_escalar_profesor"],
+            "mensaje_sin_respaldo": texto(req.mensaje_sin_respaldo, "mensaje_sin_respaldo"),
+            "mensaje_fuera_de_foco": texto(req.mensaje_fuera_de_foco, "mensaje_fuera_de_foco"),
+            "canal_alternativo": (req.canal_alternativo or "").strip()
+            if req.canal_alternativo is not None
+            else actual["canal_alternativo"],
+        }
+        router_jeff._guardar_config_atomico(ruta_config, datos)
+
+    return {"status": "ok", "codigo_ramo": codigo, **datos["config_fallback"]}
+
+
 def _sse(evento: Dict[str, Any]) -> str:
     return f"data: {json.dumps(evento, ensure_ascii=False)}\n\n"
 
@@ -692,24 +957,28 @@ def _obtener_config_fallback(datos_ramo: Dict[str, Any], codigo: str) -> Dict[st
     return {
         "habilitado": bool(cfg.get("habilitado", True)),
         "permitir_escalar_profesor": bool(cfg.get("permitir_escalar_profesor", True)),
-        "mensaje_sin_respaldo": cfg.get(
-            "mensaje_sin_respaldo",
-            (
-                f"No encontré respaldo suficiente en los apuntes oficiales ni en la información "
-                f"administrativa de {codigo} para responder con certeza. Si quieres, puedes enviar "
-                f"esta pregunta al profesor para que la revise."
-            ),
+        "mensaje_sin_respaldo": cfg.get("mensaje_sin_respaldo")
+        or (
+            f"No encontré respaldo suficiente en los apuntes oficiales ni en la información "
+            f"administrativa de {codigo} para responder con certeza. Si quieres, puedes enviar "
+            f"esta pregunta al profesor para que la revise."
         ),
-        "mensaje_fuera_de_foco": cfg.get(
-            "mensaje_fuera_de_foco",
-            (
-                f"Esa consulta parece estar fuera del foco del ramo {codigo}. "
-                "Este tutor responde únicamente con base en los contenidos oficiales del curso. "
-                "Si crees que sí está relacionada con la asignatura, puedes enviarla al profesor."
-            ),
+        "mensaje_fuera_de_foco": cfg.get("mensaje_fuera_de_foco")
+        or (
+            f"Esa consulta parece estar fuera del foco del ramo {codigo}. "
+            "Este tutor responde únicamente con base en los contenidos oficiales del curso. "
+            "Si crees que sí está relacionada con la asignatura, puedes enviarla al profesor."
         ),
         "canal_alternativo": cfg.get("canal_alternativo", ""),
     }
+
+
+def _texto_con_canal_alternativo(texto: str, cfg: Dict[str, Any]) -> str:
+    """Anexa el canal alternativo configurable a las respuestas FALLBACK_DOCENTE."""
+    canal = str(cfg.get("canal_alternativo") or "").strip()
+    if not canal:
+        return texto
+    return f"{texto}\n\nPuedes consultar también por {canal}."
 
 
 def _pista_calculo(mensaje: str) -> str:
@@ -742,17 +1011,24 @@ def _pista_calculo(mensaje: str) -> str:
 
 
 def _obtener_temario(codigo_ramo: str, limite: int = 12) -> List[str]:
-    """Lista los temas del ramo a partir de los títulos de sus PDFs."""
+    """Lista los temas del ramo a partir de los títulos de sus documentos."""
     dir_documentos = BASE_DATA_DIR / codigo_ramo.upper() / "documentos"
     if not dir_documentos.exists():
         return []
 
     temas: List[str] = []
-    for pdf in sorted(dir_documentos.rglob("*.pdf")):
+    archivos = sorted(
+        archivo
+        for archivo in dir_documentos.rglob("*")
+        if archivo.is_file()
+        and archivo.suffix.lower() in rag_engine.EXTENSIONES_INDEXABLES
+        and not any(parte.startswith(".") for parte in archivo.relative_to(dir_documentos).parts)
+    )
+    for archivo in archivos:
         nombre = re.sub(
             r"^[A-Z]{2,}\d+\s*N\d+\s*-\s*",
             "",
-            pdf.stem,
+            archivo.stem,
             flags=re.IGNORECASE,
         )
         temas.append(nombre.replace("_", " ").strip())
@@ -917,19 +1193,29 @@ def _reindexar_ramos_pendientes() -> None:
         if not dir_documentos.exists():
             continue
 
-        pdfs = sorted(dir_documentos.rglob("*.pdf"))
-        if not pdfs:
+        archivos = sorted(
+            archivo
+            for archivo in dir_documentos.rglob("*")
+            if archivo.is_file()
+            and archivo.suffix.lower() in rag_engine.EXTENSIONES_INDEXABLES
+            and not any(parte.startswith(".") for parte in archivo.relative_to(dir_documentos).parts)
+        )
+        if not archivos:
             continue
 
         try:
             pendientes = []
-            for pdf in pdfs:
-                carpeta = pdf.parent.name if pdf.parent != dir_documentos else "General"
-                if not rag_engine.esta_indexado(pdf.name, codigo, carpeta):
-                    pendientes.append(pdf.name)
+            for archivo in archivos:
+                carpeta = (
+                    archivo.parent.relative_to(dir_documentos).as_posix()
+                    if archivo.parent != dir_documentos
+                    else "General"
+                )
+                if not rag_engine.esta_indexado(archivo.name, codigo, carpeta):
+                    pendientes.append(archivo.name)
 
             if not pendientes:
-                logger.info("RAG %s al día (%d PDFs).", codigo, len(pdfs))
+                logger.info("RAG %s al día (%d archivos).", codigo, len(archivos))
                 continue
 
             logger.info(
@@ -1101,6 +1387,41 @@ def _construir_prompt_informativo_planificacion(
     )
 
 
+def _registrar_analitica_evento(
+    codigo: str,
+    mensaje: str,
+    canal: str,
+    modo: Optional[str] = None,
+    topico: Optional[str] = None,
+    categoria: Optional[str] = None,
+    motivo: Optional[str] = None,
+    con_contexto: Optional[bool] = None,
+    score: Optional[float] = None,
+    inicio: Optional[float] = None,
+    error: bool = False,
+) -> None:
+    """Registra un evento sin romper el chat si falla la escritura de analítica."""
+    duracion_ms = (
+        int((time.perf_counter() - inicio) * 1000) if inicio is not None else None
+    )
+    try:
+        analytics_store.registrar_evento(
+            codigo_ramo=codigo,
+            pregunta=mensaje,
+            canal=canal,
+            modo=modo,
+            topico=topico,
+            categoria=categoria,
+            motivo=motivo,
+            con_contexto=con_contexto,
+            score=score,
+            duracion_ms=duracion_ms,
+            error=error,
+        )
+    except Exception as exc:
+        logger.warning("No se pudo registrar analítica de %s: %s", codigo, exc)
+
+
 @app.post("/api/chat")
 async def chat(consulta: ConsultaChat):
     """
@@ -1114,11 +1435,24 @@ async def chat(consulta: ConsultaChat):
     with open(ruta_config, "r", encoding="utf-8") as f:
         datos_ramo = json.load(f)
 
+    inicio_chat = time.perf_counter()
     historial_limpio = _limpiar_historial(consulta.historial)
 
     # 1. Jeff responde dudas administrativas sin tocar la GPU.
     jeff = router_jeff.resolver_consulta(consulta.mensaje, codigo, historial=historial_limpio)
     if jeff:
+        _registrar_analitica_evento(
+            codigo,
+            consulta.mensaje,
+            canal="JEFF_ADMIN",
+            modo="administrativo",
+            topico=jeff.get("topico"),
+            categoria=jeff.get("categoria"),
+            con_contexto=False,
+            score=jeff.get("puntaje"),
+            inicio=inicio_chat,
+        )
+
         async def generador_jeff():
             for fragmento in _fragmentos_token(jeff["respuesta"]):
                 yield _sse({"tipo": "token", "contenido": fragmento})
@@ -1169,6 +1503,9 @@ async def chat(consulta: ConsultaChat):
 
         docs_plan = router_jeff.listar_documentos_planificacion(codigo)
         contexto_plan = rag_engine.formatear_contexto(fragmentos_plan)
+        score_plan = max(
+            (f.get("score") or 0.0 for f in fragmentos_plan), default=None
+        )
 
         # Identificar enlaces relevantes (los documentos citados por RAG o todos los de Planificacion/)
         archivos_citados = {f.get("archivo") for f in fragmentos_plan if f.get("archivo")}
@@ -1187,19 +1524,32 @@ async def chat(consulta: ConsultaChat):
                 bloque_enlaces = f"\n\n---\nDocumento de planificación: {enlaces_md}"
 
             async def generador_plan_rag():
-                yield _sse({
-                    "tipo": "inicio",
-                    "canal": "JEFF_ADMIN",
-                    "modo": "informativo",
-                    "con_contexto": True,
-                })
-                async for evento in _eventos_ollama(
-                    system_prompt_plan, consulta.mensaje, historial_limpio
-                ):
-                    yield _sse(evento)
-                if bloque_enlaces:
-                    yield _sse({"tipo": "token", "contenido": bloque_enlaces})
-                yield _sse({"tipo": "fin", "canal": "JEFF_ADMIN", "categoria": "Planificación del Curso"})
+                try:
+                    yield _sse({
+                        "tipo": "inicio",
+                        "canal": "JEFF_ADMIN",
+                        "modo": "informativo",
+                        "con_contexto": True,
+                    })
+                    async for evento in _eventos_ollama(
+                        system_prompt_plan, consulta.mensaje, historial_limpio
+                    ):
+                        yield _sse(evento)
+                    if bloque_enlaces:
+                        yield _sse({"tipo": "token", "contenido": bloque_enlaces})
+                    yield _sse({"tipo": "fin", "canal": "JEFF_ADMIN", "categoria": "Planificación del Curso"})
+                finally:
+                    _registrar_analitica_evento(
+                        codigo,
+                        consulta.mensaje,
+                        canal="JEFF_ADMIN",
+                        modo="informativo",
+                        topico="planificacion",
+                        categoria="Planificación del Curso",
+                        con_contexto=True,
+                        score=score_plan,
+                        inicio=inicio_chat,
+                    )
 
             return StreamingResponse(generador_plan_rag(), media_type="text/event-stream")
 
@@ -1210,6 +1560,17 @@ async def chat(consulta: ConsultaChat):
             texto_docs = (
                 f"[Jeff - Planificación {codigo}]: Puedes revisar la planificación oficial "
                 f"directamente en:\n\n{enlaces_md}"
+            )
+            _registrar_analitica_evento(
+                codigo,
+                consulta.mensaje,
+                canal="JEFF_ADMIN",
+                modo="informativo",
+                topico="planificacion",
+                categoria="Planificación del Curso",
+                con_contexto=False,
+                motivo="enlaces_planificacion",
+                inicio=inicio_chat,
             )
             return StreamingResponse(
                 _respuesta_fija(
@@ -1239,6 +1600,16 @@ async def chat(consulta: ConsultaChat):
     if modo == "procedimental" and router_modo.es_calculo_directo(consulta.mensaje):
         pista = _pista_calculo(consulta.mensaje)
         logger.info("Chat %s cálculo directo: pista forzada", codigo)
+        _registrar_analitica_evento(
+            codigo,
+            consulta.mensaje,
+            canal="TUTOR_SOCRATICO",
+            modo=modo,
+            motivo="calculo_directo",
+            con_contexto=bool(contexto),
+            score=max_score,
+            inicio=inicio_chat,
+        )
         return StreamingResponse(
             _respuesta_fija(pista, modo, bool(contexto), pista_forzada=True),
             media_type="text/event-stream",
@@ -1254,12 +1625,24 @@ async def chat(consulta: ConsultaChat):
     )
     if fuera_de_foco:
         if cfg_fallback["habilitado"]:
-            texto_fuera = cfg_fallback["mensaje_fuera_de_foco"]
+            texto_fuera = _texto_con_canal_alternativo(
+                cfg_fallback["mensaje_fuera_de_foco"], cfg_fallback
+            )
             logger.info(
                 "Chat %s FALLBACK_DOCENTE fuera de foco (modo=%s score=%.3f)",
                 codigo,
                 modo,
                 max_score,
+            )
+            _registrar_analitica_evento(
+                codigo,
+                consulta.mensaje,
+                canal="FALLBACK_DOCENTE",
+                modo=modo,
+                motivo="fuera_de_foco",
+                con_contexto=bool(contexto),
+                score=max_score,
+                inicio=inicio_chat,
             )
             return StreamingResponse(
                 _respuesta_fija(
@@ -1281,6 +1664,16 @@ async def chat(consulta: ConsultaChat):
         logger.info(
             "Chat %s fuera de foco (modo=%s score=%.3f)", codigo, modo, max_score
         )
+        _registrar_analitica_evento(
+            codigo,
+            consulta.mensaje,
+            canal="TUTOR_SOCRATICO",
+            modo=modo,
+            motivo="fuera_de_foco_sin_config",
+            con_contexto=bool(contexto),
+            score=max_score,
+            inicio=inicio_chat,
+        )
         return StreamingResponse(
             _respuesta_fija(texto_fuera, modo, bool(contexto), fuera_de_foco=True),
             media_type="text/event-stream",
@@ -1293,12 +1686,24 @@ async def chat(consulta: ConsultaChat):
         and not bool(contexto)
     )
     if sin_respaldo_rag:
-        texto_sin_respaldo = cfg_fallback["mensaje_sin_respaldo"]
+        texto_sin_respaldo = _texto_con_canal_alternativo(
+            cfg_fallback["mensaje_sin_respaldo"], cfg_fallback
+        )
         logger.info(
             "Chat %s FALLBACK_DOCENTE sin respaldo RAG (modo=%s score=%.3f)",
             codigo,
             modo,
             max_score,
+        )
+        _registrar_analitica_evento(
+            codigo,
+            consulta.mensaje,
+            canal="FALLBACK_DOCENTE",
+            modo=modo,
+            motivo="sin_respaldo_rag",
+            con_contexto=False,
+            score=max_score,
+            inicio=inicio_chat,
         )
         return StreamingResponse(
             _respuesta_fija(
@@ -1326,28 +1731,50 @@ async def chat(consulta: ConsultaChat):
 
     # 3. Tutor socrático con streaming.
     async def generador_ollama():
-        yield _sse({
-            "tipo": "inicio",
-            "canal": "TUTOR_SOCRATICO",
-            "modo": modo,
-            "con_contexto": bool(contexto),
-        })
-        prefijo_respuesta = ""
-        async for evento in _eventos_ollama(
-            system_prompt, consulta.mensaje, historial_limpio
-        ):
-            if evento.get("tipo") == "token" and len(prefijo_respuesta) < 120:
-                prefijo_respuesta += str(evento.get("contenido") or "")
-            yield _sse(evento)
-
-        if cfg_fallback["habilitado"] and _detectar_fuera_de_foco_en_respuesta(prefijo_respuesta):
+        canal_final = "TUTOR_SOCRATICO"
+        motivo_final: Optional[str] = None
+        error_final = False
+        try:
             yield _sse({
-                "tipo": "fin",
-                "canal": "FALLBACK_DOCENTE",
-                "puede_escalar": cfg_fallback["permitir_escalar_profesor"],
-                "motivo": "fuera_de_foco",
+                "tipo": "inicio",
+                "canal": "TUTOR_SOCRATICO",
+                "modo": modo,
+                "con_contexto": bool(contexto),
             })
-        else:
-            yield _sse({"tipo": "fin", "canal": "TUTOR_SOCRATICO"})
+            prefijo_respuesta = ""
+            async for evento in _eventos_ollama(
+                system_prompt, consulta.mensaje, historial_limpio
+            ):
+                if evento.get("tipo") == "token" and len(prefijo_respuesta) < 120:
+                    prefijo_respuesta += str(evento.get("contenido") or "")
+                yield _sse(evento)
+
+            if cfg_fallback["habilitado"] and _detectar_fuera_de_foco_en_respuesta(prefijo_respuesta):
+                canal_final = "FALLBACK_DOCENTE"
+                motivo_final = "fuera_de_foco"
+                yield _sse({
+                    "tipo": "fin",
+                    "canal": "FALLBACK_DOCENTE",
+                    "puede_escalar": cfg_fallback["permitir_escalar_profesor"],
+                    "motivo": "fuera_de_foco",
+                })
+            else:
+                yield _sse({"tipo": "fin", "canal": "TUTOR_SOCRATICO"})
+        except Exception as exc:
+            error_final = True
+            logger.error("Error en streaming del tutor %s: %s", codigo, exc)
+            raise
+        finally:
+            _registrar_analitica_evento(
+                codigo,
+                consulta.mensaje,
+                canal=canal_final,
+                modo=modo,
+                motivo=motivo_final,
+                con_contexto=bool(contexto),
+                score=max_score,
+                inicio=inicio_chat,
+                error=error_final,
+            )
 
     return StreamingResponse(generador_ollama(), media_type="text/event-stream")
