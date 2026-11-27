@@ -33,7 +33,12 @@ import {
   Search,
   Pencil,
   RefreshCw,
+  Eye,
 } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
 import { ChatWindow } from '../alumno/ChatWindow';
 import { TareasJeffPanel } from './TareasJeffPanel';
 import { AnaliticaDocentePanel } from './AnaliticaDocentePanel';
@@ -55,6 +60,7 @@ import {
   crearFaqJeff,
   actualizarFaqJeff,
   eliminarFaqJeff,
+  generarBorradorFaqIA,
 } from '../../services/api';
 
 interface DocenteViewProps {
@@ -99,13 +105,21 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
   const [faqsJeff, setFaqsJeff] = useState<FaqJeff[]>([]);
   const [cargandoFaqs, setCargandoFaqs] = useState<boolean>(false);
   const [busquedaFaqs, setBusquedaFaqs] = useState<string>('');
+  const [paginaFaqs, setPaginaFaqs] = useState<number>(1);
   const [mostrarFormFaq, setMostrarFormFaq] = useState<boolean>(false);
+  const [faqMinimizada, setFaqMinimizada] = useState<boolean>(false);
+  const [faqVistaPrevia, setFaqVistaPrevia] = useState<boolean>(false);
   const [faqEditandoId, setFaqEditandoId] = useState<string | null>(null);
   const [faqPregunta, setFaqPregunta] = useState<string>('');
   const [faqRespuesta, setFaqRespuesta] = useState<string>('');
   const [faqCategoria, setFaqCategoria] = useState<string>('Consultas Resueltas');
   const [faqPalabrasClave, setFaqPalabrasClave] = useState<string>('');
   const [guardandoFaq, setGuardandoFaq] = useState<boolean>(false);
+  const [generandoBorradorIA, setGenerandoBorradorIA] = useState<boolean>(false);
+  const [fuentesBorradorIA, setFuentesBorradorIA] = useState<string[]>([]);
+  const [faqArchivosIA, setFaqArchivosIA] = useState<string[]>([]);
+  const [faqCarpetaAbiertaIA, setFaqCarpetaAbiertaIA] = useState<Record<string, boolean>>({});
+  const [faqFiltroArchivosIA, setFaqFiltroArchivosIA] = useState<string>('');
   const [eliminandoFaqId, setEliminandoFaqId] = useState<string | null>(null);
 
   // Estado del gestor de archivos
@@ -274,6 +288,10 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
     setFaqRespuesta('');
     setFaqCategoria('Consultas Resueltas');
     setFaqPalabrasClave('');
+    setFuentesBorradorIA([]);
+    setFaqArchivosIA([]);
+    setFaqMinimizada(false);
+    setFaqVistaPrevia(false);
     setMostrarFormFaq(true);
   };
 
@@ -283,12 +301,23 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
     setFaqRespuesta((faq.respuesta || '').replace(/^📌\s*/, ''));
     setFaqCategoria(faq.categoria || 'Consultas Resueltas');
     setFaqPalabrasClave((faq.palabras_clave || []).join(', '));
+    setFuentesBorradorIA([]);
+    setFaqArchivosIA([]);
+    setFaqMinimizada(false);
+    setFaqVistaPrevia(false);
     setMostrarFormFaq(true);
+  };
+
+  const minimizarFormFaq = () => {
+    setFaqMinimizada(true);
   };
 
   const cancelarFormFaq = () => {
     setMostrarFormFaq(false);
+    setFaqMinimizada(false);
     setFaqEditandoId(null);
+    setFuentesBorradorIA([]);
+    setFaqArchivosIA([]);
   };
 
   const manejarGuardarFaq = async (e: React.FormEvent) => {
@@ -410,8 +439,45 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
     setFaqRespuesta('');
     setFaqCategoria('Consultas Resueltas');
     setFaqPalabrasClave('');
+    setFuentesBorradorIA([]);
+    setFaqArchivosIA([]);
+    setFaqMinimizada(false);
+    setFaqVistaPrevia(false);
     setMostrarFormFaq(true);
     setSubTab('jeff');
+  };
+
+  const toggleArchivoFaqIA = (nombreArchivo: string) => {
+    setFaqArchivosIA((prev) =>
+      prev.includes(nombreArchivo)
+        ? prev.filter((item) => item !== nombreArchivo)
+        : [...prev, nombreArchivo]
+    );
+  };
+
+  const manejarGenerarBorradorIA = async () => {
+    if (!ramoActivo) return;
+    const preguntaLimpia = faqPregunta.trim();
+    if (!preguntaLimpia) {
+      mostrarMensaje('error', 'Escribe primero una pregunta de referencia para generar el borrador.');
+      return;
+    }
+    setGenerandoBorradorIA(true);
+    setFuentesBorradorIA([]);
+    try {
+      const res = await generarBorradorFaqIA(ramoActivo.codigo, preguntaLimpia, faqArchivosIA);
+      setFaqRespuesta(res.borrador);
+      setFuentesBorradorIA(res.fuentes || []);
+      if (Array.isArray(res.palabras_clave) && res.palabras_clave.length > 0) {
+        setFaqPalabrasClave(res.palabras_clave.join(', '));
+      }
+      mostrarMensaje('exito', 'Borrador y palabras clave sugeridas generados con IA.');
+    } catch (err) {
+      const mensaje = err instanceof Error ? err.message : 'No se pudo generar el borrador con IA';
+      mostrarMensaje('error', mensaje);
+    } finally {
+      setGenerandoBorradorIA(false);
+    }
   };
 
   const manejarGuardarConfigSocratica = async (e: React.FormEvent) => {
@@ -1712,25 +1778,44 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                 </button>
               </div>
 
-              {/* Formulario de creación / edición */}
-              {mostrarFormFaq && (
-                <form
-                  onSubmit={manejarGuardarFaq}
-                  className="bg-white p-6 rounded-sm border-l-2 border-l-[#234E86] border border-slate-200 space-y-4"
+              {/* Modal de creación / edición de pregunta */}
+              {mostrarFormFaq && !faqMinimizada && (
+                <div
+                  className="fixed inset-0 z-50 bg-slate-950/50 backdrop-blur-[2px] flex items-center justify-center p-4"
+                  onClick={minimizarFormFaq}
                 >
-                  <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                    <h4 className="font-display text-sm font-bold text-slate-900">
-                      {faqEditandoId ? 'Editar pregunta guardada' : 'Nueva pregunta guardada'}
-                    </h4>
-                    <button
-                      type="button"
-                      onClick={cancelarFormFaq}
-                      className="text-slate-400 hover:text-slate-700 p-1 transition"
-                      title="Cancelar"
+                  <div
+                    className="bg-white rounded-sm shadow-2xl border border-slate-200 max-w-2xl w-full max-h-[90vh] flex flex-col overflow-hidden"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <div className="h-1 w-full bg-gradient-to-r from-[#234E86] via-[#4378B8] to-[#83B7E8] shrink-0" />
+                    <form
+                      onSubmit={manejarGuardarFaq}
+                      className="p-6 space-y-4 overflow-y-auto"
                     >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
+                      <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                        <h4 className="font-display text-sm font-bold text-slate-900">
+                          {faqEditandoId ? 'Editar pregunta guardada' : 'Nueva pregunta guardada'}
+                        </h4>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={minimizarFormFaq}
+                            className="text-slate-400 hover:text-[#234E86] px-2 py-1 text-xs font-semibold rounded-sm hover:bg-slate-100 transition"
+                            title="Minimizar a la barra inferior"
+                          >
+                            Minimizar
+                          </button>
+                          <button
+                            type="button"
+                            onClick={cancelarFormFaq}
+                            className="text-slate-400 hover:text-slate-700 p-1 transition"
+                            title="Descartar y cerrar"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
@@ -1759,18 +1844,275 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                     </div>
                   </div>
 
+                  {archivos.some((a) => a.indexado_rag) && (() => {
+                    const filtroNorm = faqFiltroArchivosIA.trim().toLowerCase();
+                    const indexados = archivos.filter((a) => a.indexado_rag);
+                    const filtrados = filtroNorm
+                      ? indexados.filter(
+                          (a) =>
+                            a.nombre.toLowerCase().includes(filtroNorm) ||
+                            (a.carpeta || 'General').toLowerCase().includes(filtroNorm)
+                        )
+                      : indexados;
+
+                    const porCarpeta = filtrados.reduce<Record<string, ArchivoRecurso[]>>((acc, item) => {
+                      const key = item.carpeta || 'General';
+                      if (!acc[key]) acc[key] = [];
+                      acc[key].push(item);
+                      return acc;
+                    }, {});
+                    const nombresCarpetas = Object.keys(porCarpeta).sort((a, b) => a.localeCompare(b));
+
+                    return (
+                      <div className="rounded-sm border border-slate-200 bg-white overflow-hidden">
+                        {/* Cabecera del explorador */}
+                        <div className="px-3 py-2.5 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <FolderOpen className="w-3.5 h-3.5 text-[#234E86]" />
+                            <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-slate-600">
+                              Documentos para que lea la IA (opcional)
+                            </span>
+                            {faqArchivosIA.length > 0 && (
+                              <span className="font-mono text-[10px] font-semibold px-1.5 py-0.5 rounded-sm bg-[#234E86] text-white">
+                                {faqArchivosIA.length} selec.
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <div className="relative">
+                              <Search className="w-3 h-3 text-slate-400 absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+                              <input
+                                type="text"
+                                value={faqFiltroArchivosIA}
+                                onChange={(e) => setFaqFiltroArchivosIA(e.target.value)}
+                                placeholder="Filtrar archivo..."
+                                className="pl-6 pr-2 py-1 text-[11px] bg-white border border-slate-200 rounded-sm focus:outline-none focus:border-[#234E86] w-40"
+                              />
+                            </div>
+                            {faqArchivosIA.length > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => setFaqArchivosIA([])}
+                                className="text-[11px] font-medium text-[#234E86] hover:underline"
+                              >
+                                Limpiar
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Chips resumen de archivos seleccionados */}
+                        {faqArchivosIA.length > 0 && (
+                          <div className="px-3 py-2 bg-blue-50/60 border-b border-slate-200 flex flex-wrap gap-1.5">
+                            {faqArchivosIA.map((nombre) => (
+                              <span
+                                key={nombre}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-sm bg-[#234E86] text-white text-[11px] font-medium"
+                              >
+                                <FileText className="w-3 h-3 shrink-0" />
+                                <span className="truncate max-w-[220px]">{nombre}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => toggleArchivoFaqIA(nombre)}
+                                  className="ml-0.5 hover:text-blue-200"
+                                  title="Quitar documento"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Árbol de carpetas y archivos */}
+                        <div className="max-h-52 overflow-y-auto divide-y divide-slate-100">
+                          {nombresCarpetas.length === 0 ? (
+                            <p className="px-3 py-4 text-xs text-slate-400 text-center">
+                              No se encontraron documentos indexados con ese filtro.
+                            </p>
+                          ) : (
+                            nombresCarpetas.map((carpeta) => {
+                              const lista = porCarpeta[carpeta];
+                              const abierta = Boolean(filtroNorm) || Boolean(faqCarpetaAbiertaIA[carpeta]);
+                              const cantSeleccionados = lista.filter((a) =>
+                                faqArchivosIA.includes(a.nombre)
+                              ).length;
+
+                              return (
+                                <div key={carpeta}>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setFaqCarpetaAbiertaIA((prev) => ({
+                                        ...prev,
+                                        [carpeta]: !prev[carpeta],
+                                      }))
+                                    }
+                                    className="w-full px-3 py-2 flex items-center justify-between gap-2 text-left hover:bg-slate-50 transition"
+                                  >
+                                    <div className="flex items-center gap-2 min-w-0">
+                                      {abierta ? (
+                                        <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                                      ) : (
+                                        <ChevronRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                                      )}
+                                      {abierta ? (
+                                        <FolderOpen className="w-3.5 h-3.5 text-[#234E86] shrink-0" />
+                                      ) : (
+                                        <Folder className="w-3.5 h-3.5 text-[#234E86] shrink-0" />
+                                      )}
+                                      <span className="text-xs font-semibold text-slate-700 truncate">
+                                        {carpeta}
+                                      </span>
+                                    </div>
+                                    <div className="flex items-center gap-2 shrink-0">
+                                      {cantSeleccionados > 0 && (
+                                        <span className="font-mono text-[10px] font-semibold px-1.5 py-0.5 rounded-sm bg-blue-100 text-[#234E86]">
+                                          {cantSeleccionados} selec.
+                                        </span>
+                                      )}
+                                      <span className="font-mono text-[10px] text-slate-400">
+                                        {lista.length} archivo{lista.length === 1 ? '' : 's'}
+                                      </span>
+                                    </div>
+                                  </button>
+
+                                  {abierta && (
+                                    <ul className="bg-slate-50/40 divide-y divide-slate-100 border-t border-slate-100">
+                                      {lista.map((archivo) => {
+                                        const seleccionado = faqArchivosIA.includes(archivo.nombre);
+                                        return (
+                                          <li key={`${archivo.carpeta}/${archivo.nombre}`}>
+                                            <label className="flex items-center justify-between gap-3 pl-9 pr-3 py-1.5 cursor-pointer hover:bg-blue-50/50 transition">
+                                              <div className="flex items-center gap-2.5 min-w-0">
+                                                <input
+                                                  type="checkbox"
+                                                  checked={seleccionado}
+                                                  onChange={() => toggleArchivoFaqIA(archivo.nombre)}
+                                                  className="h-3.5 w-3.5 rounded-sm border-slate-300 text-[#234E86] focus:ring-[#234E86] cursor-pointer shrink-0"
+                                                />
+                                                <FileText
+                                                  className={`w-3.5 h-3.5 shrink-0 ${
+                                                    seleccionado ? 'text-[#234E86]' : 'text-slate-400'
+                                                  }`}
+                                                />
+                                                <span
+                                                  className={`text-xs truncate ${
+                                                    seleccionado
+                                                      ? 'font-semibold text-[#234E86]'
+                                                      : 'text-slate-700'
+                                                  }`}
+                                                >
+                                                  {archivo.nombre}
+                                                </span>
+                                              </div>
+                                              <span className="font-mono text-[10px] text-slate-400 shrink-0">
+                                                {archivo.tamano_legible}
+                                              </span>
+                                            </label>
+                                          </li>
+                                        );
+                                      })}
+                                    </ul>
+                                  )}
+                                </div>
+                              );
+                            })
+                          )}
+                        </div>
+
+                        {/* Pie informativo */}
+                        <div className="px-3 py-1.5 bg-slate-50/70 border-t border-slate-100 text-[10px] text-slate-500">
+                          {faqArchivosIA.length > 0
+                            ? `La IA leerá únicamente los ${faqArchivosIA.length} documento(s) seleccionado(s) para ahorrar tokens.`
+                            : 'Si no marcas ningún archivo, la IA buscará automáticamente en los documentos más relevantes.'}
+                        </div>
+                      </div>
+                    );
+                  })()}
+
                   <div>
-                    <label className="block font-mono text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">
-                      Respuesta oficial
-                    </label>
-                    <textarea
-                      rows={3}
-                      value={faqRespuesta}
-                      onChange={(e) => setFaqRespuesta(e.target.value)}
-                      placeholder="Escribe la respuesta oficial que entregarán Jeff y el Tutor Socrático..."
-                      className="w-full rounded-sm border border-slate-300 px-3 py-2 text-xs focus:outline-none focus:border-[#234E86]"
-                      required
-                    />
+                    <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
+                      <label className="block font-mono text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                        Respuesta oficial
+                      </label>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setFaqVistaPrevia((prev) => !prev)}
+                          disabled={!faqRespuesta.trim() && !faqVistaPrevia}
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm border text-[11px] font-semibold transition disabled:opacity-40 ${
+                            faqVistaPrevia
+                              ? 'border-[#234E86] bg-[#234E86] text-white'
+                              : 'border-slate-200 bg-white text-slate-700 hover:border-[#234E86] hover:text-[#234E86]'
+                          }`}
+                          title="Alternar entre edición en texto y vista previa renderizada con LaTeX"
+                        >
+                          {faqVistaPrevia ? (
+                            <>
+                              <Pencil className="w-3 h-3" />
+                              <span>Editar texto</span>
+                            </>
+                          ) : (
+                            <>
+                              <Eye className="w-3 h-3" />
+                              <span>Vista previa</span>
+                            </>
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={manejarGenerarBorradorIA}
+                          disabled={generandoBorradorIA || !faqPregunta.trim()}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm border border-blue-200 bg-blue-50 text-[11px] font-semibold text-[#234E86] hover:bg-[#234E86] hover:text-white transition disabled:opacity-50"
+                          title="Lee los documentos indexados del ramo y redacta un borrador editable"
+                        >
+                          {generandoBorradorIA ? (
+                            <RefreshCw className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <Sparkles className="w-3 h-3" />
+                          )}
+                          <span>
+                            {generandoBorradorIA ? 'Generando con IA...' : 'Generar borrador con IA'}
+                          </span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {faqVistaPrevia ? (
+                      <div className="min-h-[168px] max-h-80 overflow-y-auto rounded-sm border border-blue-200 bg-slate-50/70 px-4 py-3 text-xs text-slate-800 markdown-content">
+                        {faqRespuesta.trim() ? (
+                          <ReactMarkdown
+                            remarkPlugins={[remarkGfm, remarkMath]}
+                            rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
+                          >
+                            {faqRespuesta}
+                          </ReactMarkdown>
+                        ) : (
+                          <p className="text-slate-400 italic">
+                            Aún no hay respuesta para previsualizar.
+                          </p>
+                        )}
+                      </div>
+                    ) : (
+                      <textarea
+                        rows={7}
+                        value={faqRespuesta}
+                        onChange={(e) => setFaqRespuesta(e.target.value)}
+                        placeholder="Escribe la respuesta oficial que entregarán Jeff y el Tutor Socrático (soporta Markdown y LaTeX $...$)..."
+                        className="w-full rounded-sm border border-slate-300 px-3 py-2 text-xs focus:outline-none focus:border-[#234E86]"
+                        required
+                      />
+                    )}
+                    {fuentesBorradorIA.length > 0 && (
+                      <p className="text-[11px] text-slate-500 mt-1">
+                        Borrador generado a partir de:{' '}
+                        <span className="font-mono text-slate-700">
+                          {fuentesBorradorIA.join(', ')}
+                        </span>
+                        . Puedes modificarlo libremente antes de guardar.
+                      </p>
+                    )}
                   </div>
 
                   <div>
@@ -1812,20 +2154,38 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                       </span>
                     </button>
                   </div>
-                </form>
+                    </form>
+                  </div>
+                </div>
               )}
 
-              {/* Buscador y listado */}
+              {/* Buscador y tarjetas paginadas */}
               <div className="bg-white p-5 rounded-sm border border-slate-200 space-y-5">
                 <div className="relative">
-                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
                     type="text"
                     value={busquedaFaqs}
-                    onChange={(e) => setBusquedaFaqs(e.target.value)}
+                    onChange={(e) => {
+                      setBusquedaFaqs(e.target.value);
+                      setPaginaFaqs(1);
+                    }}
                     placeholder="Buscar por pregunta, respuesta, categoría o palabras clave..."
-                    className="w-full pl-9 pr-3 py-2.5 bg-slate-50/70 border-b-2 border-slate-200 text-xs focus:outline-none focus:border-[#234E86] focus:bg-white rounded-none transition-colors"
+                    className="w-full pl-9 pr-8 py-2.5 bg-slate-50/70 border border-slate-200 text-xs focus:outline-none focus:border-[#234E86] focus:bg-white rounded-sm transition-colors"
                   />
+                  {busquedaFaqs && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setBusquedaFaqs('');
+                        setPaginaFaqs(1);
+                      }}
+                      title="Limpiar búsqueda"
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
                 </div>
 
                 {cargandoFaqs ? (
@@ -1833,6 +2193,7 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                     Cargando preguntas guardadas...
                   </p>
                 ) : (() => {
+                  const FAQS_POR_PAGINA = 6;
                   const termino = busquedaFaqs.trim().toLowerCase();
                   const filtradas = !termino
                     ? faqsJeff
@@ -1858,77 +2219,123 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                             : 'No se encontraron preguntas con ese filtro'}
                         </p>
                         <p className="text-xs text-slate-500">
-                          Crea una nueva pregunta arriba o guarda una respuesta desde Consultas de Alumnos.
+                          Crea una nueva pregunta arriba o guarda una respuesta desde Consultas de Alumnos o Analítica.
                         </p>
                       </div>
                     );
                   }
 
+                  const totalPaginas = Math.max(1, Math.ceil(filtradas.length / FAQS_POR_PAGINA));
+                  const paginaActual = Math.min(paginaFaqs, totalPaginas);
+                  const inicio = (paginaActual - 1) * FAQS_POR_PAGINA;
+                  const visibles = filtradas.slice(inicio, inicio + FAQS_POR_PAGINA);
+
                   return (
-                    <div className="divide-y divide-slate-200">
-                      {filtradas.map((faq) => (
-                        <div
-                          key={faq.id}
-                          className="py-4 first:pt-1 last:pb-1 space-y-2.5"
-                        >
-                          <div className="flex flex-wrap items-start justify-between gap-2">
-                            <div className="space-y-1 flex-1 min-w-0">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className="font-mono text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-sm bg-blue-50 text-[#234E86] border border-blue-200">
-                                  {faq.categoria || 'General'}
-                                </span>
-                                <span className="text-[10px] font-mono text-slate-400">
-                                  {faq.id}
+                    <div className="space-y-4">
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+                        {visibles.map((faq) => {
+                          const textoLimpio = (faq.respuesta || '').replace(/^📌\s*/, '');
+                          const keywords = faq.palabras_clave || [];
+                          return (
+                            <div
+                              key={faq.id}
+                              role="button"
+                              tabIndex={0}
+                              onClick={() => abrirEditarFaq(faq)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault();
+                                  abrirEditarFaq(faq);
+                                }
+                              }}
+                              className="group flex flex-col justify-between p-4 rounded-sm border border-slate-200 bg-white hover:border-[#234E86] hover:shadow-sm transition cursor-pointer text-left space-y-2.5"
+                            >
+                              <div className="space-y-2">
+                                <div className="flex items-start justify-between gap-2">
+                                  <span className="font-mono text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-sm bg-blue-50 text-[#234E86] border border-blue-200 truncate max-w-[180px]">
+                                    {faq.categoria || 'General'}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    disabled={eliminandoFaqId === faq.id}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      manejarEliminarFaq(faq);
+                                    }}
+                                    title="Eliminar pregunta"
+                                    className="p-1 rounded-sm text-slate-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-50 transition shrink-0"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+
+                                <h4 className="font-display text-xs font-bold text-slate-900 group-hover:text-[#234E86] transition line-clamp-2 leading-snug">
+                                  {faq.pregunta || faq.id}
+                                </h4>
+
+                                <p className="text-[11px] text-slate-600 leading-relaxed line-clamp-3">
+                                  {textoLimpio}
+                                </p>
+                              </div>
+
+                              <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2">
+                                <div className="flex flex-wrap items-center gap-1 min-w-0">
+                                  {keywords.slice(0, 2).map((kw) => (
+                                    <span
+                                      key={kw}
+                                      className="font-mono text-[9px] px-1.5 py-0.5 rounded-sm bg-slate-100 text-slate-600 truncate max-w-[95px]"
+                                    >
+                                      {kw}
+                                    </span>
+                                  ))}
+                                  {keywords.length > 2 && (
+                                    <span className="font-mono text-[9px] text-slate-400">
+                                      +{keywords.length - 2}
+                                    </span>
+                                  )}
+                                </div>
+                                <span className="inline-flex items-center gap-1 text-[10px] font-medium text-slate-400 group-hover:text-[#234E86] shrink-0">
+                                  <Pencil className="w-3 h-3" />
+                                  <span>Editar</span>
                                 </span>
                               </div>
-                              {faq.pregunta && (
-                                <p className="font-display text-sm font-semibold text-slate-900">
-                                  “{faq.pregunta}”
-                                </p>
-                              )}
                             </div>
-                            <div className="flex items-center gap-1.5 shrink-0">
-                              <button
-                                type="button"
-                                onClick={() => abrirEditarFaq(faq)}
-                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-sm border border-slate-200 bg-white text-[11px] font-semibold text-slate-700 hover:border-[#234E86] hover:text-[#234E86] transition"
-                              >
-                                <Pencil className="w-3 h-3" />
-                                <span>Editar</span>
-                              </button>
-                              <button
-                                type="button"
-                                disabled={eliminandoFaqId === faq.id}
-                                onClick={() => manejarEliminarFaq(faq)}
-                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-sm border border-red-200 bg-white text-[11px] font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50 transition"
-                              >
-                                <Trash2 className="w-3 h-3" />
-                                <span>{eliminandoFaqId === faq.id ? 'Eliminando...' : 'Eliminar'}</span>
-                              </button>
-                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {/* Controles de paginación */}
+                      <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3 text-xs">
+                        <span className="font-mono text-[11px] text-slate-500">
+                          Mostrando {inicio + 1}–{Math.min(inicio + FAQS_POR_PAGINA, filtradas.length)} de{' '}
+                          {filtradas.length} pregunta{filtradas.length === 1 ? '' : 's'}
+                        </span>
+                        {totalPaginas > 1 && (
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              disabled={paginaActual <= 1}
+                              onClick={() => setPaginaFaqs((p) => Math.max(1, p - 1))}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-sm border border-slate-200 text-xs font-medium text-slate-700 hover:border-[#234E86] hover:text-[#234E86] disabled:opacity-40 disabled:pointer-events-none transition"
+                            >
+                              <ArrowLeft className="w-3 h-3" />
+                              <span>Anterior</span>
+                            </button>
+                            <span className="font-mono text-[11px] px-2 text-slate-600">
+                              {paginaActual} / {totalPaginas}
+                            </span>
+                            <button
+                              type="button"
+                              disabled={paginaActual >= totalPaginas}
+                              onClick={() => setPaginaFaqs((p) => Math.min(totalPaginas, p + 1))}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-sm border border-slate-200 text-xs font-medium text-slate-700 hover:border-[#234E86] hover:text-[#234E86] disabled:opacity-40 disabled:pointer-events-none transition"
+                            >
+                              <span>Siguiente</span>
+                              <ArrowRight className="w-3 h-3" />
+                            </button>
                           </div>
-
-                          <p className="text-xs text-slate-700 whitespace-pre-wrap leading-relaxed bg-slate-50/70 p-3.5 rounded-sm border-l-2 border-l-[#4378B8]">
-                            {(faq.respuesta || '').replace(/^📌\s*/, '')}
-                          </p>
-
-                          {faq.palabras_clave && faq.palabras_clave.length > 0 && (
-                            <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                              <span className="font-mono text-[10px] uppercase tracking-wider font-semibold text-slate-400">
-                                Keywords
-                              </span>
-                              {faq.palabras_clave.map((kw) => (
-                                <span
-                                  key={kw}
-                                  className="font-mono text-[10px] px-2 py-0.5 rounded-sm bg-slate-100 text-slate-700"
-                                >
-                                  {kw}
-                                </span>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      ))}
+                        )}
+                      </div>
                     </div>
                   );
                 })()}
@@ -2285,6 +2692,52 @@ export const DocenteView: React.FC<DocenteViewProps> = ({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+      {/* Barra flotante inferior para preguntas/borradores activos minimizados */}
+      {ramoActivo && mostrarFormFaq && faqMinimizada && (
+        <div className="fixed bottom-4 right-5 z-40 max-w-sm w-[calc(100vw-2.5rem)] sm:w-auto">
+          <div className="flex items-center gap-3 bg-white border border-slate-300 border-t-2 border-t-[#234E86] rounded-sm shadow-xl px-3.5 py-2.5">
+            <button
+              type="button"
+              onClick={() => {
+                setSubTab('jeff');
+                setFaqMinimizada(false);
+              }}
+              className="flex items-center gap-2.5 min-w-0 flex-1 text-left group"
+              title="Abrir ventana para continuar editando o guardar"
+            >
+              <div className="w-7 h-7 rounded-sm bg-blue-50 text-[#234E86] flex items-center justify-center shrink-0">
+                {generandoBorradorIA ? (
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                ) : faqRespuesta.trim() ? (
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                ) : (
+                  <Pencil className="w-3.5 h-3.5" />
+                )}
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-semibold text-slate-900 group-hover:text-[#234E86] truncate max-w-[220px]">
+                  {faqPregunta.trim() || (faqEditandoId ? 'Editando pregunta' : 'Nueva pregunta')}
+                </p>
+                <p className="font-mono text-[10px] text-slate-500">
+                  {generandoBorradorIA
+                    ? 'Generando borrador con IA...'
+                    : faqRespuesta.trim()
+                    ? 'Borrador listo · clic para guardar'
+                    : 'Borrador activo · clic para abrir'}
+                </p>
+              </div>
+            </button>
+            <button
+              type="button"
+              onClick={cancelarFormFaq}
+              title="Descartar borrador"
+              className="p-1 rounded-sm text-slate-400 hover:text-red-600 hover:bg-red-50 transition shrink-0"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
           </div>
         </div>
       )}

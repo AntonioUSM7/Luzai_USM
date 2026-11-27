@@ -55,7 +55,8 @@ _PATRONES_SALUDO: List[str] = [
 ]
 
 _PALABRAS_META: List[str] = [
-    "tema", "temas", "prueba", "examen", "certamen", "tarea", "laboratorio",
+    "tema", "temas", "materia", "contenido", "contenidos", "objetivo", "objetivos",
+    "prueba", "examen", "certamen", "tarea", "laboratorio",
     "experiencia", "planificacion", "cronograma", "evaluacion", "presentacion",
     "fecha", "fechas", "paralelo",
     "ramo", "curso", "clase", "apunte", "apuntes", "profesor", "ayudante", "horario",
@@ -85,6 +86,9 @@ def es_saludo(mensaje: str) -> bool:
 def menciona_tema_del_ramo(mensaje: str, temario: List[str]) -> bool:
     """Heurística de alcance: ¿la consulta menciona un tema o palabra meta del curso?"""
     texto = normalizar(mensaje)
+    if re.search(r"\b(ot|exp|lab)\s*\d+\b", texto):
+        return True
+
     if any(re.search(rf"\b{re.escape(palabra)}\b", texto) for palabra in _PALABRAS_META):
         return True
 
@@ -146,12 +150,35 @@ _PATRONES_ADMIN_PLANIFICACION: List[str] = [
 ]
 
 
+_PATRONES_LOGISTICA_ESTRICTA: List[str] = [
+    r"\b(planificacion|cronograma|calendario|fechas?|cuando\s+(?:es|son|se|toca|hay|entregan)|que\s+dia\s+(?:es|son|toca|hay))\b",
+    r"\b(sala|horario|entrega|entregan|plazo|paralelo\s*20\d|fiestas\s+patrias|vacaciones|notas\s+finales|feriado|holgura)\b",
+]
+
+_PATRONES_CONTENIDO_ACADEMICO: List[str] = [
+    r"\b(materia|contenido|contenidos|objetivo|objetivos|de\s+que\s+trata|explica|explicame|explicar|resume|resumen|resumir)\b",
+    r"\b(como\s+se\s+hace|paso\s+a\s+paso|que\s+hay\s+que\s+hacer|ejercicios?|preguntas?|topologia|configura|configurar|configuracion|protocolo|protocolos)\b",
+]
+
+
+def es_consulta_contenido_academico(mensaje: str) -> bool:
+    """Indica si el mensaje pide materia/contenido académico sin pedir fechas ni logística."""
+    texto = normalizar(mensaje)
+    if not texto:
+        return False
+    return any(re.search(patron, texto) for patron in _PATRONES_CONTENIDO_ACADEMICO) and not any(
+        re.search(patron, texto) for patron in _PATRONES_LOGISTICA_ESTRICTA
+    )
+
+
 def es_consulta_administrativa_o_planificacion(mensaje: str) -> bool:
     """
     Detecta consultas sobre el cronograma, fechas, evaluaciones o mapa de sesiones/experiencias
-    del curso, sin capturar preguntas puramente conceptuales o procedimentales técnicas.
+    del curso, sin capturar preguntas puramente conceptuales, de contenido/materia o procedimentales técnicas.
     """
     texto = normalizar(mensaje)
     if not texto:
+        return False
+    if es_consulta_contenido_academico(mensaje):
         return False
     return any(re.search(patron, texto) for patron in _PATRONES_ADMIN_PLANIFICACION)

@@ -7,7 +7,7 @@
   "documentos": [],
   "reglas_socraticas": "Guía paso a paso el planteamiento de integrales de línea, teorema de Green/Stokes y separación de variables en EDPs. Jamás resuelvas la integral completa ni entregues el resultado numérico final.",
   "config_socratica": {
-    "estilo": "equilibrado",
+    "estilo": "estricto",
     "extension": "media"
   },
   "config_fallback": {
@@ -39,7 +39,7 @@
       "id": "mat_certamen",
       "categoria": "Evaluaciones",
       "palabras_clave": [
-        "certamen",
+        "fecha de certamen",
         "fecha",
         "prueba",
         "evaluacion",
@@ -71,6 +71,39 @@
         "sala"
       ],
       "respuesta": "[Jeff - Info Administrativa MAT024]: Las ayudantías oficiales se realizan los miércoles en bloque 7-8 en las salas del Edificio A."
+    },
+    {
+      "id": "docente_300b0e90",
+      "categoria": "Consultas Resueltas",
+      "palabras_clave": [
+        "clase 1 mat024",
+        "que se vio en la clase 1",
+        "resumen clase 1",
+        "que hay que hacer en la clase 1",
+        "tema clase 1",
+        "conceptos clase 1",
+        "ejercicios clase 1",
+        "secciones transversales clase 1"
+      ],
+      "respuesta": "[Jeff - Respuesta Docente MAT024]: # Resumen de la Clase 1 - MAT024\n\n## Tema principal\nLa clase 1 del curso **MAT024** se enfoca en el **cálculo de volúmenes utilizando secciones transversales**. Se presentan métodos para calcular el volumen de sólidos mediante la integración de áreas de secciones transversales.\n\n## Conceptos clave\n### 1. Secciones transversales\nSecciones transversales son cortes perpendiculares a un eje (como el eje $x$ o el eje $y$) que permiten calcular el volumen de un sólido. Estas secciones son utilizadas para dividir el sólido en capas cuyas áreas se integran para obtener el volumen total.\n\n### 2. Volumen mediante secciones transversales\nEl volumen de un sólido se calcula mediante la fórmula:\n$$\nV = \\int_a^b A(x) \\, dx\n$$\ndonde $A(x)$ es el área de la sección transversal perpendicular al eje $x$ en el punto $x$.\n\n### 3. Integrales iteradas\nEn algunos casos, se utilizan **integrales iteradas** para calcular el volumen bajo una superficie $z = f(x, y)$. Por ejemplo:\n$$\nV = \\int_a^b \\int_c^d f(x, y) \\, dy \\, dx\n$$\nEstas integrales son útiles cuando el sólido se describe en términos de una función de dos variables.\n\n### 4. Ejercicios prácticos\nSe presentaron ejercicios que involucran el cálculo del volumen de figuras geométricas como:\n- Pirámides\n- Sólidos con secciones transversales en forma de triángulos equiláteros\n\n## Metodología\nSe revisó el concepto de partición de una región rectangular en subrectángulos y se introdujo el uso de puntos arbitrarios $\\xi_{ij}$ dentro de cada subrectángulo para calcular el volumen mediante sumas de Riemann.\n\n## Conclusión\nLa clase 1 establece la base teórica para el cálculo de volúmenes mediante secciones transversales y introduce el uso de integrales iteradas como herramienta para resolver problemas prácticos en el cálculo de volúmenes.",
+      "pregunta": "Resumen o Guia Clase 1"
+    },
+    {
+      "id": "docente_ff931c37",
+      "categoria": "Consultas Resueltas",
+      "palabras_clave": [
+        "resumen clase 2",
+        "que se vio en clase 2",
+        "guia clase 2",
+        "que hay que hacer en clase 2",
+        "teorema de fubini clase 2",
+        "ejemplos clase 2",
+        "integrales dobles clase 2",
+        "condiciones clase 2",
+        "hazme un resumen de la clase 2"
+      ],
+      "respuesta": "[Jeff - Respuesta Docente MAT024]: # **Resumen Clase 2 - MAT024**\n\n## **Contenido de la Clase 2**\n\n### **Teorema de Fubini**\nEl **Teorema de Fubini** es fundamental en el cálculo de integrales dobles. Este teorema establece que, bajo ciertas condiciones, la integral doble de una función sobre una región rectangular puede evaluarse como una integral iterada. Es decir, el orden de integración no afecta el resultado final, siempre que la función sea integrable.\n\n$$\n\\iint_R f(x, y) \\, dA = \\int_a^b \\int_c^d f(x, y) \\, dy \\, dx = \\int_c^d \\int_a^b f(x, y) \\, dx \\, dy\n$$\n\nEste teorema es especialmente útil cuando se quiere simplificar el cálculo de integrales dobles al elegir el orden de integración que resulte más fácil.\n\n### **Integrales sobre regiones no rectangulares**\nEn la clase se abordó cómo calcular integrales dobles sobre regiones que no son rectangulares. Para ello, se debe describir la región de integración en términos de límites que dependen de una variable, y luego aplicar el teorema de Fubini para evaluar la integral.\n\n### **Ejemplo de cálculo de una integral doble**\nSe presentó un ejemplo de cálculo de una integral doble sobre una región rectangular, donde se evaluó la integral en dos órdenes diferentes, obteniendo el mismo resultado. El ejemplo mostró cómo se puede reescribir la integral doble como una integral iterada y cómo se resuelve paso a paso.\n\n### **Condiciones de continuidad y diferenciabilidad**\nSe mencionaron condiciones necesarias para que una función sea integrable o diferenciable, como la continuidad de la función y de sus derivadas parciales. Estas condiciones son importantes para garantizar que las integrales iteradas y las integrales dobles coincidan.\n\n### **Ejemplo de una función discontinua**\nSe analizó una función que presenta discontinuidades en ciertos puntos, como la función definida por:\n\n$$\nf(x, y) = \n\\begin{cases}\n\\frac{\\sin(1)}{|x| - |y|}, & \\text{si } |x| \\neq |y| \\\\\n0, & \\text{si } |x| = |y|\n\\end{cases}\n$$\n\nEsta función es discontinua en los puntos donde $|x| = |y|$, lo que puede afectar la integrabilidad de la función sobre ciertas regiones.\n\n---",
+      "pregunta": "Guia o Resumen Clase 2"
     }
   ]
 }
