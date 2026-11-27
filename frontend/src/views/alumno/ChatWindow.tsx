@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, HelpCircle, CheckCircle2, Sparkles, RotateCcw } from 'lucide-react';
+import { Send, HelpCircle, CheckCircle2, Sparkles, RotateCcw, X } from 'lucide-react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -74,6 +74,39 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ ramo, modoEmbebido = fal
   const [cargando, setCargando] = useState(false);
   const finChatRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const [modalConsultaProfeAbierto, setModalConsultaProfeAbierto] = useState(false);
+  const [textoConsultaProfe, setTextoConsultaProfe] = useState('');
+  const [enviandoConsultaProfe, setEnviandoConsultaProfe] = useState(false);
+  const [estadoConsultaProfe, setEstadoConsultaProfe] = useState<'idle' | 'enviada' | 'error'>('idle');
+
+  const abrirModalConsultaProfe = () => {
+    setTextoConsultaProfe(entrada.trim());
+    setEstadoConsultaProfe('idle');
+    setModalConsultaProfeAbierto(true);
+  };
+
+  const manejarEnviarConsultaDirecta = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const pregunta = textoConsultaProfe.trim();
+    if (!pregunta || enviandoConsultaProfe) return;
+
+    setEnviandoConsultaProfe(true);
+    setEstadoConsultaProfe('idle');
+    try {
+      await enviarConsultaProfesor(ramo.codigo, pregunta, 'consulta_directa_alumno');
+      setEstadoConsultaProfe('enviada');
+      setTextoConsultaProfe('');
+      setTimeout(() => {
+        setModalConsultaProfeAbierto(false);
+        setEstadoConsultaProfe('idle');
+      }, 1500);
+    } catch {
+      setEstadoConsultaProfe('error');
+    } finally {
+      setEnviandoConsultaProfe(false);
+    }
+  };
 
   const crearMensajeBienvenida = (): MensajeChat => ({
     id: `bienvenida-${ramo.codigo}-${Date.now()}`,
@@ -239,9 +272,20 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ ramo, modoEmbebido = fal
               </div>
             </div>
 
-            <div className="hidden sm:flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500 shrink-0">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-              <span>Tutor activo</span>
+            <div className="flex items-center gap-3 shrink-0">
+              <button
+                type="button"
+                onClick={abrirModalConsultaProfe}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm border border-blue-200 bg-blue-50/70 hover:bg-[#234E86] hover:text-white text-[#234E86] text-xs font-semibold transition"
+                title="Enviar una duda directamente al buzón del profesor"
+              >
+                <HelpCircle className="w-3.5 h-3.5" />
+                <span>Consultar al profesor</span>
+              </button>
+              <div className="hidden sm:flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                <span>Tutor activo</span>
+              </div>
             </div>
           </header>
         </>
@@ -526,6 +570,91 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({ ramo, modoEmbebido = fal
           </button>
         </div>
       </form>
+      {/* Modal para enviar consulta directa al profesor */}
+      {modalConsultaProfeAbierto && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-950/50 backdrop-blur-[2px] flex items-center justify-center p-4"
+          onClick={() => !enviandoConsultaProfe && setModalConsultaProfeAbierto(false)}
+        >
+          <div
+            className="bg-white rounded-sm shadow-2xl border border-slate-200 max-w-md w-full overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="h-1 w-full bg-gradient-to-r from-[#234E86] via-[#4378B8] to-[#83B7E8]" />
+            <form onSubmit={manejarEnviarConsultaDirecta} className="p-5 space-y-4">
+              <div className="flex items-start justify-between gap-2 border-b border-slate-100 pb-3">
+                <div>
+                  <h3 className="font-display text-sm font-bold text-slate-900">
+                    Enviar consulta al profesor ({ramo.codigo})
+                  </h3>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    Tu duda llegará al buzón docente del ramo para ser respondida oficialmente.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setModalConsultaProfeAbierto(false)}
+                  disabled={enviandoConsultaProfe}
+                  className="text-slate-400 hover:text-slate-700 p-1 transition"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {estadoConsultaProfe === 'enviada' ? (
+                <div className="py-6 text-center space-y-2">
+                  <CheckCircle2 className="w-8 h-8 text-emerald-600 mx-auto" />
+                  <p className="text-xs font-semibold text-slate-800">
+                    Consulta enviada al buzón del profesor
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <div>
+                    <label className="block font-mono text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">
+                      Tu consulta
+                    </label>
+                    <textarea
+                      rows={4}
+                      value={textoConsultaProfe}
+                      onChange={(e) => setTextoConsultaProfe(e.target.value)}
+                      placeholder={`Escribe aquí tu pregunta para el docente de ${ramo.codigo}...`}
+                      className="w-full rounded-sm border border-slate-300 px-3 py-2 text-xs text-slate-800 focus:outline-none focus:border-[#234E86]"
+                      required
+                      autoFocus
+                    />
+                  </div>
+
+                  {estadoConsultaProfe === 'error' && (
+                    <p className="text-[11px] text-red-600">
+                      No se pudo enviar la consulta. Intenta nuevamente.
+                    </p>
+                  )}
+
+                  <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                    <button
+                      type="button"
+                      onClick={() => setModalConsultaProfeAbierto(false)}
+                      disabled={enviandoConsultaProfe}
+                      className="px-3.5 py-2 rounded-sm border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={enviandoConsultaProfe || !textoConsultaProfe.trim()}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 rounded-sm bg-gradient-to-r from-[#1E4478] to-[#2B5D9E] text-white text-xs font-semibold hover:brightness-105 disabled:opacity-50 transition"
+                    >
+                      <Send className="w-3.5 h-3.5" />
+                      <span>{enviandoConsultaProfe ? 'Enviando...' : 'Enviar al profesor'}</span>
+                    </button>
+                  </div>
+                </>
+              )}
+            </form>
+          </div>
+        </div>
+      )}
     </main>
   );
 };

@@ -434,6 +434,100 @@ def esta_indexado(nombre_archivo: str, codigo_ramo: str, carpeta: Optional[str] 
         return False
 
 
+_PATRON_IDENTIFICADOR_DOC = re.compile(
+    r"\b(?:(ot|exp|experiencia|lab|laboratorio|guia|clase|n)[\s_-]*(?:n[°º]?\s*)?0*(\d+))\b",
+    re.IGNORECASE,
+)
+
+
+def _extraer_identificadores_documento(query: str) -> List[str]:
+    """Extrae identificadores explícitos de documentos (ej. OT3, Exp 2, N04) desde la consulta."""
+    identificadores: List[str] = []
+    for prefijo, numero in _PATRON_IDENTIFICADOR_DOC.findall(query or ""):
+        pref = prefijo.lower()
+        num = str(int(numero))
+        num_pad = numero.zfill(2)
+        if pref in ("ot", "exp", "experiencia", "lab", "laboratorio"):
+            identificadores.extend([f"ot{num}", f"ot{num_pad}", f"exp{num}", f"experiencia{num}", f"lab{num}"])
+        elif pref == "n":
+            identificadores.extend([f"n{num_pad}", f"n{num}"])
+        else:
+            identificadores.extend([f"{pref}{num}", f"{pref}{num_pad}"])
+    return list(dict.fromkeys(identificadores))
+
+
+def _buscar_fragmentos_por_nombre_archivo(
+    query: str,
+    coleccion: Any,
+    vector_query: List[float],
+    carpeta: Optional[str],
+    limite: int,
+) -> List[Dict[str, Any]]:
+    """Prioriza fragmentos de archivos cuyo nombre coincide con un identificador explícito (ej. OT3)."""
+    identificadores = _extraer_identificadores_documento(query)
+    if not identificadores or limite <= 0:
+        return []
+
+    try:
+        kwargs_get: Dict[str, Any] = {"include": ["metadatas"]}
+        if carpeta:
+            kwargs_get["where"] = {"carpeta": carpeta}
+        meta_res = coleccion.get(**kwargs_get)
+    except Exception:
+        return []
+
+    archivos_unicos = sorted({
+        meta.get("archivo", "")
+        for meta in (meta_res.get("metadatas") or [])
+        if isinstance(meta, dict) and meta.get("archivo")
+    })
+
+    archivos_coincidentes: List[str] = []
+    for archivo in archivos_unicos:
+        tokens_archivo = {t.lower() for t in re.findall(r"[a-zA-Z0-9]+", archivo)}
+        norm_compacto = re.sub(r"[^a-z0-9]+", "", archivo.lower())
+        if any(ident in tokens_archivo or ident in norm_compacto for ident in identificadores):
+            archivos_coincidentes.append(archivo)
+
+    if not archivos_coincidentes:
+        return []
+
+    priorizados: List[Dict[str, Any]] = []
+    por_archivo = max(1, min(3, limite))
+    for archivo in archivos_coincidentes[:2]:
+        where_filtro: Dict[str, Any] = (
+            {"$and": [{"archivo": archivo}, {"carpeta": carpeta}]}
+            if carpeta
+            else {"archivo": archivo}
+        )
+        try:
+            res = coleccion.query(
+                query_embeddings=[vector_query],
+                n_results=por_archivo,
+                where=where_filtro,
+                include=["documents", "metadatas", "distances"],
+            )
+        except Exception:
+            continue
+
+        docs = (res.get("documents") or [[]])[0]
+        metas = (res.get("metadatas") or [[]])[0]
+        dists = (res.get("distances") or [[]])[0]
+        for idx, texto in enumerate(docs):
+            meta = metas[idx] if idx < len(metas) else {}
+            distancia = dists[idx] if idx < len(dists) else None
+            priorizados.append({
+                "texto": texto,
+                "archivo": meta.get("archivo", ""),
+                "carpeta": meta.get("carpeta", ""),
+                "pagina": meta.get("pagina"),
+                "distancia": distancia,
+                "score": (1 - distancia) if isinstance(distancia, (int, float)) else None,
+            })
+
+    return priorizados[:limite]
+
+
 def buscar_fragmentos(
     query: str,
     codigo_ramo: str,
@@ -447,6 +541,9 @@ def buscar_fragmentos(
         return []
 
     vector_query = generar_embedding_ollama(_texto_para_consulta(query))
+    priorizados = _buscar_fragmentos_por_nombre_archivo(
+        query, coleccion, vector_query, carpeta, min(3, top_k)
+    )
     argumentos: Dict[str, Any] = {
         "query_embeddings": [vector_query],
         "n_results": min(top_k, total),
@@ -462,9 +559,20 @@ def buscar_fragmentos(
     distancias = (resultados.get("distances") or [[]])[0]
 
     fragmentos: List[Dict[str, Any]] = []
+    vistos = set()
+    for frag in priorizados:
+        clave = (frag.get("archivo"), frag.get("pagina"), frag.get("texto", "")[:120])
+        if clave not in vistos:
+            vistos.add(clave)
+            fragmentos.append(frag)
+
     for indice, texto in enumerate(documentos):
         meta = metadatos[indice] if indice < len(metadatos) else {}
         distancia = distancias[indice] if indice < len(distancias) else None
+        clave = (meta.get("archivo", ""), meta.get("pagina"), texto[:120])
+        if clave in vistos:
+            continue
+        vistos.add(clave)
         fragmentos.append({
             "texto": texto,
             "archivo": meta.get("archivo", ""),
@@ -473,6 +581,8 @@ def buscar_fragmentos(
             "distancia": distancia,
             "score": (1 - distancia) if isinstance(distancia, (int, float)) else None,
         })
+        if len(fragmentos) >= top_k:
+            break
 
     return fragmentos
 

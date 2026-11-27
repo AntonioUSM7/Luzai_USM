@@ -615,6 +615,220 @@ def actualizar_faq_jeff_ramo(codigo_ramo: str, faq_id: str, req: FaqJeffReq):
     return {"status": "ok", "faq": faq, "rag_sincronizado": rag_sincronizado}
 
 
+class BorradorFaqIAReq(BaseModel):
+    pregunta: str
+    archivos: List[str] = Field(default_factory=list)
+
+
+def _buscar_fragmentos_en_archivos(
+    pregunta: str, codigo_ramo: str, archivos: List[str], top_k: int = 6
+) -> List[Dict[str, Any]]:
+    """Recupera fragmentos únicamente desde los archivos elegidos por el docente."""
+    coleccion = rag_engine.obtener_cliente_chroma(codigo_ramo)
+    total = coleccion.count()
+    if total == 0 or not archivos:
+        return []
+
+    vector_query = rag_engine.generar_embedding_ollama(
+        rag_engine._texto_para_consulta(pregunta)
+    )
+    where_filtro: Dict[str, Any] = (
+        {"archivo": archivos[0]}
+        if len(archivos) == 1
+        else {"archivo": {"$in": archivos}}
+    )
+    res = coleccion.query(
+        query_embeddings=[vector_query],
+        n_results=min(top_k, total),
+        where=where_filtro,
+        include=["documents", "metadatas", "distances"],
+    )
+    docs = (res.get("documents") or [[]])[0]
+    metas = (res.get("metadatas") or [[]])[0]
+    dists = (res.get("distances") or [[]])[0]
+    fragmentos: List[Dict[str, Any]] = []
+    for idx, texto in enumerate(docs):
+        meta = metas[idx] if idx < len(metas) else {}
+        distancia = dists[idx] if idx < len(dists) else None
+        fragmentos.append({
+            "texto": texto,
+            "archivo": meta.get("archivo", ""),
+            "carpeta": meta.get("carpeta", ""),
+            "pagina": meta.get("pagina"),
+            "distancia": distancia,
+            "score": (1 - distancia) if isinstance(distancia, (int, float)) else None,
+        })
+    return fragmentos
+
+
+def _limpiar_latex_inline(texto: str) -> str:
+    """Elimina espacios pegados al borde de $...$ para que remark-math/KaTeX renderice siempre."""
+    return re.sub(r"(?<!\$)\$\s+([^\n$]+?)\s+\$(?!\$)", r"$\1$", texto)
+
+
+def _parsear_borrador_ia_respuesta(contenido: str) -> tuple[str, List[str]]:
+    """Extrae borrador (con LaTeX intacto) y palabras_clave desde respuesta delimitada o JSON."""
+    texto = (contenido or "").strip()
+    if not texto:
+        return "", []
+
+    # Formato principal con delimitadores (evita que JSON corrompa \text, \frac, \beta, etc.)
+    match_delim = re.search(
+        r"---RESPUESTA---\s*(.*?)\s*---PALABRAS_CLAVE---\s*(.*)",
+        texto,
+        re.DOTALL | re.IGNORECASE,
+    )
+    if match_delim:
+        borrador = _limpiar_latex_inline(match_delim.group(1).strip())
+        claves_texto = match_delim.group(2).strip()
+        claves_raw = [c.strip() for c in re.split(r"[,\n]+", claves_texto) if c.strip()]
+        claves_limpias = [
+            re.sub(r"^[-*•\d.)\s]+", "", re.sub(r"[¿?¡!.,;:]+", "", c)).strip().lower()
+            for c in claves_raw
+        ]
+        claves_limpias = [c for c in claves_limpias if len(c) >= 3]
+        return borrador, list(dict.fromkeys(claves_limpias))[:8]
+
+    # Fallback JSON
+    bloque = texto
+    match_fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", texto, re.DOTALL)
+    if match_fence:
+        bloque = match_fence.group(1)
+    elif "{" in texto and "}" in texto:
+        bloque = texto[texto.find("{") : texto.rfind("}") + 1]
+
+    try:
+        parsed = json.loads(bloque)
+        if isinstance(parsed, dict):
+            borrador = _limpiar_latex_inline(
+                str(parsed.get("borrador") or parsed.get("respuesta") or "").strip()
+            )
+            claves_raw = parsed.get("palabras_clave") or parsed.get("keywords") or []
+            if isinstance(claves_raw, str):
+                claves = [c.strip() for c in claves_raw.split(",") if c.strip()]
+            elif isinstance(claves_raw, list):
+                claves = [str(c).strip() for c in claves_raw if str(c).strip()]
+            else:
+                claves = []
+            if borrador:
+                claves_limpias = [
+                    re.sub(r"[¿?¡!.,;:]+", "", c).strip().lower()
+                    for c in claves
+                ]
+                claves_limpias = [c for c in claves_limpias if len(c) >= 3]
+                return borrador, list(dict.fromkeys(claves_limpias))[:8]
+    except Exception:
+        pass
+
+    return _limpiar_latex_inline(texto), []
+
+
+@app.post("/api/ramos/{codigo_ramo}/faqs_jeff/borrador_ia")
+async def generar_borrador_faq_ia(codigo_ramo: str, req: BorradorFaqIAReq):
+    """Genera un borrador de respuesta oficial y palabras clave leyendo documentos del ramo con RAG + Ollama."""
+    codigo = codigo_ramo.upper()
+    pregunta = (req.pregunta or "").strip()
+    if not pregunta:
+        raise HTTPException(status_code=400, detail="Debes indicar una pregunta de referencia.")
+
+    ruta_config = BASE_DATA_DIR / codigo / "config.json"
+    if not ruta_config.exists():
+        raise HTTPException(status_code=404, detail="Ramo no encontrado")
+
+    archivos_seleccionados = [Path(a).name for a in (req.archivos or []) if str(a).strip()]
+
+    try:
+        if archivos_seleccionados:
+            fragmentos = await asyncio.to_thread(
+                _buscar_fragmentos_en_archivos, pregunta, codigo, archivos_seleccionados, 10
+            )
+        else:
+            fragmentos = await asyncio.to_thread(
+                rag_engine.buscar_fragmentos_relevantes, pregunta, codigo, 7
+            )
+    except Exception as exc:
+        logger.error("Error recuperando contexto RAG para borrador IA en %s: %s", codigo, exc)
+        fragmentos = []
+
+    contexto = rag_engine.formatear_contexto(fragmentos)
+    fuentes = list(dict.fromkeys(
+        f.get("archivo", "") for f in fragmentos if f.get("archivo")
+    ))
+
+    if not contexto:
+        raise HTTPException(
+            status_code=404,
+            detail="No se encontraron fragmentos indexados en los documentos seleccionados para generar un borrador.",
+        )
+
+    system_prompt = (
+        f"Eres un asistente docente del ramo {codigo} en la Universidad Técnica Federico Santa María (USM). "
+        "Tu tarea es redactar un borrador de 'Respuesta Oficial' de alta calidad y sugerir variantes de preguntas/frases "
+        "que escribiría un estudiante para que el enrutador Jeff pueda interceptar esta consulta.\n"
+        "Reglas estrictas:\n"
+        "1. En 'borrador': responde únicamente con base en los fragmentos de documentos entregados, sin inventar datos.\n"
+        "   - Si la pregunta pide un resumen de clase, materia, guía, teoremas o conceptos: redacta una respuesta COMPLETA, "
+        "ordenada y didáctica en Markdown (usa subtítulos `###`, viñetas y **negritas** para conceptos clave).\n"
+        "   - Cuando el material contenga fórmulas, ecuaciones, teoremas, integrales, vectores o notación matemática/técnica, "
+        "escríbelas SIEMPRE en LaTeX estándar bien formateado: `$...$` sin espacios internos en los bordes (ej. `$x$`, no `$ x $`) "
+        "para expresiones en línea, y `$$...$$` en bloque separado para fórmulas principales. Si el texto extraído del PDF "
+        "perdió símbolos de integral, suma o fracción, reconstruye la notación LaTeX correcta (ej. `\\int_a^b`, `\\iint_R`, `\\Delta x`, `\\frac{a}{b}`).\n"
+        "   - Si la pregunta es puramente administrativa (fechas, sala, entregas), sé breve y directo.\n"
+        "2. En 'palabras_clave': genera entre 5 y 8 frases cortas o formas en que un ALUMNO preguntaría esto en el chat "
+        "(en minúsculas, sin signos de interrogación, de 2 a 6 palabras cada una). "
+        "IMPORTANTE: deben ser variantes de la PREGUNTA del alumno (por ejemplo, 'resumen clase 1', 'que se vio en la clase 1', "
+        "'materia clase 1', 'guia ot3', 'que hay que hacer en la ot3'). "
+        "NO pongas palabras técnicas sacadas solo de la respuesta que el alumno aún no conoce.\n"
+        "3. Devuelve tu respuesta usando EXACTAMENTE este formato con dos secciones (sin bloques de código extra):\n"
+        "---RESPUESTA---\n"
+        "<aquí va la respuesta oficial completa en Markdown y LaTeX>\n"
+        "---PALABRAS_CLAVE---\n"
+        "frase 1, frase 2, frase 3, frase 4, frase 5\n\n"
+        f"DOCUMENTOS DEL CURSO:\n{contexto}"
+    )
+
+    payload = {
+        "model": OLLAMA_LLM_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Genera la respuesta oficial y las palabras clave para la pregunta: {pregunta}"},
+        ],
+        "stream": False,
+        "think": OLLAMA_THINK,
+        "options": {"temperature": 0.2, "num_ctx": OLLAMA_NUM_CTX},
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(f"{OLLAMA_HOST}/api/chat", json=payload)
+            if resp.status_code != 200:
+                detalle = resp.text[:300]
+                logger.error("Ollama devolvió %s generando borrador FAQ: %s", resp.status_code, detalle)
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Ollama no pudo generar el borrador (HTTP {resp.status_code}).",
+                )
+            data = resp.json()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Error llamando a Ollama para borrador FAQ en %s: %s", codigo, exc)
+        raise HTTPException(
+            status_code=502,
+            detail="No se pudo conectar con Ollama para generar el borrador.",
+        )
+
+    contenido_raw = ((data.get("message") or {}).get("content") or "").strip()
+    borrador, palabras_clave = _parsear_borrador_ia_respuesta(contenido_raw)
+    if not borrador:
+        raise HTTPException(
+            status_code=502,
+            detail="El modelo devolvió una respuesta vacía al generar el borrador.",
+        )
+
+    return {"borrador": borrador, "palabras_clave": palabras_clave, "fuentes": fuentes}
+
+
 @app.delete("/api/ramos/{codigo_ramo}/faqs_jeff/{faq_id}")
 def eliminar_faq_jeff_ramo(codigo_ramo: str, faq_id: str):
     """Elimina una pregunta guardada de Jeff y remueve su vector en RAG."""
@@ -945,9 +1159,12 @@ async def _respuesta_fija(
         "con_contexto": con_contexto,
         **extra,
     })
-    for fragmento in _fragmentos_token(texto):
-        yield _sse({"tipo": "token", "contenido": fragmento})
-        await asyncio.sleep(0.02)
+    if canal == "JEFF_ADMIN":
+        yield _sse({"tipo": "token", "contenido": texto})
+    else:
+        for fragmento in _fragmentos_token(texto):
+            yield _sse({"tipo": "token", "contenido": fragmento})
+            await asyncio.sleep(0.02)
     yield _sse({"tipo": "fin", "canal": canal, **extra})
 
 
@@ -1454,9 +1671,7 @@ async def chat(consulta: ConsultaChat):
         )
 
         async def generador_jeff():
-            for fragmento in _fragmentos_token(jeff["respuesta"]):
-                yield _sse({"tipo": "token", "contenido": fragmento})
-                await asyncio.sleep(0.02)
+            yield _sse({"tipo": "token", "contenido": jeff["respuesta"]})
             evento_fin: Dict[str, Any] = {
                 "tipo": "fin",
                 "canal": "JEFF_ADMIN",
@@ -1483,6 +1698,7 @@ async def chat(consulta: ConsultaChat):
             )
         )
         and not router_modo.es_saludo(consulta.mensaje)
+        and not router_modo.es_consulta_contenido_academico(consulta.mensaje)
     )
     es_admin_plan = router_modo.es_consulta_administrativa_o_planificacion(consulta.mensaje) or es_seguimiento_plan
     temario = _obtener_temario(codigo)

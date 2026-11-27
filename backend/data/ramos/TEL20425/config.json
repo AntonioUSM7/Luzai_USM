@@ -59,7 +59,7 @@
         "laboratorio",
         "horario"
       ],
-      "respuesta": "[Jeff - Info Administrativa TEL20425]: Las sesiones prácticas de TEL20425 se realizan en el Laboratorio de Redes de Computadores (Pabellón C, Sala C-204)."
+      "respuesta": "[Jeff - Info Administrativa TEL20425]: Las sesiones prácticas de TEL20425 se realizan en el Laboratorio de Redes de Computadores (Sala K306)"
     },
     {
       "id": "tel_bibliografia",
@@ -74,6 +74,47 @@
         "gns3"
       ],
       "respuesta": "[Jeff - Info Administrativa TEL20425]: El texto guía es 'Computer Networking: A Top-Down Approach' (Kurose & Ross). Para las experiencias utilizamos Wireshark y GNS3/Packet Tracer."
+    },
+    {
+      "id": "docente_6949ca17",
+      "categoria": "Consultas Resueltas",
+      "palabras_clave": [
+        "simular red",
+        "tabla conexiones",
+        "archivo pkt",
+        "puertos deshabilitados",
+        "formato pdf"
+      ],
+      "respuesta": "[Jeff - Respuesta Docente TEL20425]: La guía para la OT3 incluye simular una red de acuerdo a la figura 1, tanto a nivel lógico como físico. Debes conectar PCs a los switches, asignar direcciones IP y completar la tabla 1 con las conexiones realizadas. Recuerda deshabilitar los puertos no utilizados por seguridad. Además, debes entregar el informe y el archivo .pkt en PDF, ya que no respetar el formato te resta 20 puntos. El objetivo es familiarizarte con el uso de switches y su configuración.",
+      "pregunta": "Guia para la OT3"
+    },
+    {
+      "id": "docente_6a025332",
+      "categoria": "Consultas Resueltas",
+      "palabras_clave": [
+        "que son las redes",
+        "definicion redes",
+        "concepto redes",
+        "como son las redes",
+        "que incluyen las redes",
+        "que hace una red",
+        "que permite una red",
+        "que es una red"
+      ],
+      "respuesta": "[Jeff - Respuesta Docente TEL20425]: Una red de computadores es un conjunto de dispositivos (como computadoras, routers, switches, servidores, etc.) interconectados mediante medios de comunicación (como cables, fibra óptica, o señales inalámbricas) que permiten la comunicación y el intercambio de datos entre ellos. El objetivo principal de una red es facilitar la compartición de recursos, la transmisión de información y la colaboración entre dispositivos.\n\nLas redes pueden ser locales (LAN), metropolitanas (MAN), nacionales (WAN) o globales (como Internet). En el contexto del ramo TEL20425, se enfocan en redes de área local (LAN), direccionamiento IP, ruteo, VLAN, ACL, firewalls, y protocolos de gestión de redes como STP.\n\n¿Podrías explicar cómo se clasifican las redes según su tamaño y cuál es la diferencia entre una LAN y una WAN?",
+      "pregunta": "Que es una red?"
+    },
+    {
+      "id": "docente_76bfddde",
+      "categoria": "Consultas Resueltas",
+      "palabras_clave": [
+        "hola",
+        "saludos",
+        "como estas",
+        "hello"
+      ],
+      "respuesta": "[Jeff - Respuesta Docente TEL20425]: ¡Hola! ¿En qué puedo ayudarte con respecto a la asignatura TEL20425? Estoy aquí para guiarte en conceptos, ejercicios, configuraciones o cualquier duda relacionada con el temario del curso.",
+      "pregunta": "saludos"
     }
   ]
 }

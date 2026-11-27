@@ -600,3 +600,26 @@ export async function actualizarConfigFallback(
   }
   return respuesta.json();
 }
+
+/**
+ * Genera un borrador de respuesta oficial leyendo los documentos del ramo con IA (RAG + Ollama).
+ */
+export async function generarBorradorFaqIA(
+  codigoRamo: string,
+  pregunta: string,
+  archivos: string[] = []
+): Promise<{ borrador: string; palabras_clave: string[]; fuentes: string[] }> {
+  const respuesta = await fetch(
+    `${API_URL}/api/ramos/${codigoRamo}/faqs_jeff/borrador_ia`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pregunta, archivos }),
+    }
+  );
+  if (!respuesta.ok) {
+    const detalle = await respuesta.json().catch(() => ({}));
+    throw new Error(detalle.detail || 'No se pudo generar el borrador con IA');
+  }
+  return respuesta.json();
+}

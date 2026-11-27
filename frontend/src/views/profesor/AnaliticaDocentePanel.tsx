@@ -523,15 +523,21 @@ export const AnaliticaDocentePanel: React.FC<AnaliticaDocentePanelProps> = ({
                           </div>
                         </div>
                         <div className="flex items-center gap-2.5 shrink-0">
-                          {onGuardarEnJeff && duda.canal !== 'JEFF_ADMIN' && (
+                          {onGuardarEnJeff && (
                             <button
                               type="button"
                               onClick={() => onGuardarEnJeff(duda.texto)}
                               className="inline-flex items-center gap-1 px-2.5 py-1 rounded-sm border border-blue-200 bg-blue-50/70 text-[11px] font-semibold text-[#234E86] hover:bg-[#234E86] hover:text-white transition"
-                              title="Crear una Pregunta Guardada de Jeff a partir de esta duda"
+                              title={
+                                duda.canal === 'JEFF_ADMIN'
+                                  ? 'Definir o personalizar la respuesta oficial de Jeff para esta duda'
+                                  : 'Crear una Pregunta Guardada de Jeff a partir de esta duda'
+                              }
                             >
                               <PlusCircle className="w-3 h-3" />
-                              <span>Guardar en Jeff</span>
+                              <span>
+                                {duda.canal === 'JEFF_ADMIN' ? 'Responder en Jeff' : 'Guardar en Jeff'}
+                              </span>
                             </button>
                           )}
                           <span className="font-display text-sm font-bold text-[#234E86] min-w-[1.5rem] text-right">
